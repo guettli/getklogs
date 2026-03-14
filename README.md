@@ -7,7 +7,7 @@ Repository: <https://github.com/guettli/getklogs>
 ## Install
 
 ```console
-go install github.com/guettli/getklogs/cmd/getklogs@latest
+go install github.com/guettli/getklogs/cmd@latest
 ```
 
 ## Usage

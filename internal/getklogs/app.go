@@ -123,9 +123,9 @@ func (a App) selectWorkload(workloads []Workload, term string) (Workload, error)
 		}
 		if len(matches) > 1 {
 			var builder strings.Builder
-			builder.WriteString(fmt.Sprintf("multiple workloads match '*%s*':\n", term))
+			fmt.Fprintf(&builder, "multiple workloads match '*%s*':\n", term)
 			for _, match := range matches {
-				builder.WriteString(fmt.Sprintf("%s\t%s\t%s\t%s\n", match.Namespace, match.Kind, match.Name, match.ReadyText()))
+				fmt.Fprintf(&builder, "%s\t%s\t%s\t%s\n", match.Namespace, match.Kind, match.Name, match.ReadyText())
 			}
 			return Workload{}, errors.New(strings.TrimRight(builder.String(), "\n"))
 		}

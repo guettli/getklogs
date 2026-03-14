@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
@@ -63,7 +62,7 @@ By default, getklogs writes the result to a timestamped file such as:
 				Stderr:  stderr,
 			}
 
-			return app.Run(context.Background(), options)
+			return app.Run(cmd.Context(), options)
 		},
 	}
 	cmd.AddCommand(newToJSONCmd(stdin, stdout))

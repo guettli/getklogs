@@ -100,7 +100,11 @@ func (a App) Run(ctx context.Context, options Options) error {
 	}
 
 	for index, selected := range selectedTargets {
-		if err := a.runForTarget(ctx, selected, resolvedTargets[workloadKey(selected)], options, index > 0); err != nil {
+		targets, ok := resolvedTargets[workloadKey(selected)]
+		if !ok {
+			return fmt.Errorf("missing resolved targets for %s/%s in namespace %q", selected.Kind, selected.Name, selected.Namespace)
+		}
+		if err := a.runForTarget(ctx, selected, targets, options, index > 0); err != nil {
 			return err
 		}
 	}
@@ -169,18 +173,45 @@ func (a App) runForTarget(ctx context.Context, selected Workload, targets Worklo
 		return err
 	}
 
-	var writeErr error
-	if len(content) == 0 {
-		writeErr = os.WriteFile(outputFile, nil, 0o644)
-	} else {
-		writeErr = os.WriteFile(outputFile, content, 0o644)
-	}
-	if writeErr != nil {
-		return writeErr
+	if err := writeFileAtomically(outputFile, content, 0o644); err != nil {
+		return err
 	}
 
 	_, err = fmt.Fprintln(a.Stderr)
 	return err
+}
+
+func writeFileAtomically(filename string, content []byte, mode os.FileMode) error {
+	tempFile, err := os.CreateTemp(filepath.Dir(filename), filepath.Base(filename)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temporary file for %s: %w", filename, err)
+	}
+	tempName := tempFile.Name()
+	cleanupTemp := true
+	defer func() {
+		_ = tempFile.Close()
+		if cleanupTemp {
+			_ = os.Remove(tempName)
+		}
+	}()
+
+	if err := tempFile.Chmod(mode); err != nil {
+		return fmt.Errorf("set mode on temporary file for %s: %w", filename, err)
+	}
+	if len(content) > 0 {
+		if _, err := tempFile.Write(content); err != nil {
+			return fmt.Errorf("write temporary file for %s: %w", filename, err)
+		}
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("close temporary file for %s: %w", filename, err)
+	}
+	if err := os.Rename(tempName, filename); err != nil {
+		return fmt.Errorf("replace %s: %w", filename, err)
+	}
+
+	cleanupTemp = false
+	return nil
 }
 
 func (a App) resolveWorkloadTargets(ctx context.Context, workloads []Workload) (map[string]WorkloadTargets, error) {
@@ -303,6 +334,12 @@ func chooseWorkloadByNumber(stdin io.Reader, stdout io.Writer, workloads []Workl
 		}
 		line, err := reader.ReadString('\n')
 		if err != nil {
+			if errors.Is(err, io.EOF) && len(line) > 0 {
+				selection, convErr := strconv.Atoi(strings.TrimSpace(line))
+				if convErr == nil && selection >= 1 && selection <= len(workloads) {
+					return workloads[selection-1], nil
+				}
+			}
 			return Workload{}, fmt.Errorf("reading selection: %w", err)
 		}
 

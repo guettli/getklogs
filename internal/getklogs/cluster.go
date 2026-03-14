@@ -10,6 +10,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -500,6 +501,10 @@ func newPodLogOptions(containerName string, since time.Duration, now time.Time) 
 }
 
 func ignoreLogError(err error) bool {
+	if apierrors.IsNotFound(err) || apierrors.IsBadRequest(err) {
+		return true
+	}
+
 	message := err.Error()
 	return strings.Contains(message, "previous terminated container") ||
 		strings.Contains(message, "container not found") ||

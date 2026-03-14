@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/flowcontrol"
 )
@@ -70,5 +72,24 @@ func TestReadLogEntriesSupportsLongLines(t *testing.T) {
 	}
 	if entries[0].Message != message {
 		t.Fatalf("unexpected message length: got %d want %d", len(entries[0].Message), len(message))
+	}
+}
+
+func TestIgnoreLogErrorHandlesStructuredAPIErrors(t *testing.T) {
+	notFoundErr := apierrors.NewNotFound(schema.GroupResource{Group: "", Resource: "pods"}, "frontend-a")
+	if !ignoreLogError(notFoundErr) {
+		t.Fatal("expected not found error to be ignored")
+	}
+
+	badRequestErr := apierrors.NewBadRequest("container not found")
+	if !ignoreLogError(badRequestErr) {
+		t.Fatal("expected bad request error to be ignored")
+	}
+}
+
+func TestIgnoreLogErrorRejectsUnrelatedErrors(t *testing.T) {
+	statusErr := apierrors.NewForbidden(schema.GroupResource{Group: "", Resource: "pods"}, "frontend-a", nil)
+	if ignoreLogError(statusErr) {
+		t.Fatal("expected forbidden error not to be ignored")
 	}
 }

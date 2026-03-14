@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -117,6 +118,22 @@ func TestChooseWorkloadInteractivelyFallsBackToNumericPromptWithoutTTY(t *testin
 	}
 	if !strings.Contains(stdout.String(), "frontend | team-a | Deployment | 2/2") {
 		t.Fatalf("expected separated workload label in output, got %q", stdout.String())
+	}
+}
+
+func TestChooseWorkloadByNumberAcceptsEOFWithoutTrailingNewline(t *testing.T) {
+	workloads := []Workload{
+		{Namespace: "team-a", Kind: "Deployment", Name: "frontend", Ready: 2, Desired: 2},
+		{Namespace: "team-b", Kind: "StatefulSet", Name: "database", Ready: 1, Desired: 1},
+	}
+
+	var stdout bytes.Buffer
+	selected, err := chooseWorkloadByNumber(strings.NewReader("2"), &stdout, workloads)
+	if err != nil {
+		t.Fatalf("chooseWorkloadByNumber returned error: %v", err)
+	}
+	if selected.Name != "database" {
+		t.Fatalf("expected database, got %q", selected.Name)
 	}
 }
 
@@ -1126,6 +1143,100 @@ func TestAppRunUsesBatchTargetResolverWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestAppRunFailsWhenBatchResolverOmitsTarget(t *testing.T) {
+	app := App{
+		Cluster: missingTargetCluster{
+			fakeCluster: fakeCluster{
+				workloads: []Workload{
+					{Namespace: "team-a", Kind: "Deployment", Name: "frontend"},
+				},
+			},
+		},
+		Stdin:  strings.NewReader(""),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+
+	err := app.Run(context.Background(), Options{All: true, Since: time.Hour, OutDir: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if err.Error() != `missing resolved targets for Deployment/frontend in namespace "team-a"` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAppRunLeavesNoTemporaryFilesAfterAtomicWrite(t *testing.T) {
+	tempDir := t.TempDir()
+	cluster := fakeCluster{
+		workloads: []Workload{{
+			Namespace: "team-a",
+			Kind:      "Deployment",
+			Name:      "frontend",
+		}},
+		targets: WorkloadTargets{Containers: []ContainerRef{
+			{PodName: "frontend-a", ContainerName: "main"},
+		}},
+		logs: map[string][]LogEntry{
+			"frontend-a/main": {{
+				Timestamp:     "2026-03-14T10:00:00Z",
+				PodName:       "frontend-a",
+				ContainerName: "main",
+				Line:          "2026-03-14T10:00:00Z first",
+				Message:       "first",
+			}},
+		},
+	}
+
+	app := App{
+		Cluster: cluster,
+		Stdin:   strings.NewReader(""),
+		Stdout:  &bytes.Buffer{},
+		Stderr:  &bytes.Buffer{},
+		Now:     func() time.Time { return time.Date(2026, 3, 14, 10, 20, 30, 0, time.UTC) },
+	}
+
+	if err := app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, OutDir: tempDir}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(tempDir, "*.tmp-*"))
+	if err != nil {
+		t.Fatalf("Glob returned error: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected no temporary files, got %v", matches)
+	}
+}
+
+func TestAppRunPropagatesContextCancellationToLogCollection(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	app := App{
+		Cluster: contextAwareCluster{
+			fakeCluster: fakeCluster{
+				workloads: []Workload{{
+					Namespace: "team-a",
+					Kind:      "Deployment",
+					Name:      "frontend",
+				}},
+				targets: WorkloadTargets{Containers: []ContainerRef{
+					{PodName: "frontend-a", ContainerName: "main"},
+				}},
+			},
+		},
+		Stdin:  strings.NewReader(""),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+
+	err := app.Run(ctx, Options{TermQuery: "frontend", Since: time.Hour, Stdout: true})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
 type fakeCluster struct {
 	workloads       []Workload
 	pods            []Workload
@@ -1185,4 +1296,20 @@ func (c *trackingCluster) ResolveWorkloadTargets(ctx context.Context, workloads 
 func (c *trackingCluster) ListContainersForWorkload(ctx context.Context, workload Workload) (WorkloadTargets, error) {
 	c.listContainerCalls++
 	return c.fakeCluster.ListContainersForWorkload(ctx, workload)
+}
+
+type missingTargetCluster struct {
+	fakeCluster
+}
+
+func (c missingTargetCluster) ResolveWorkloadTargets(context.Context, []Workload) (map[string]WorkloadTargets, error) {
+	return map[string]WorkloadTargets{}, nil
+}
+
+type contextAwareCluster struct {
+	fakeCluster
+}
+
+func (c contextAwareCluster) GetLogs(ctx context.Context, _ string, _ string, _ string, _ time.Duration) ([]LogEntry, error) {
+	return nil, ctx.Err()
 }

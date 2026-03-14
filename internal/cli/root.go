@@ -9,6 +9,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var newCluster = func() (getklogs.ClusterAPI, error) {
+	return getklogs.NewCluster()
+}
+
 func NewRootCmd(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	options := getklogs.Options{
 		Since: getklogs.DefaultSince,
@@ -50,7 +54,7 @@ By default, getklogs writes the result to a timestamped file such as:
 				return err
 			}
 
-			cluster, err := getklogs.NewCluster()
+			cluster, err := newCluster()
 			if err != nil {
 				return err
 			}

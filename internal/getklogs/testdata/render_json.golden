@@ -1,0 +1,2 @@
+{"kubernetes_timestamp":"2026-03-14T10:00:00Z","level":"info","msg":"hello","source_container":"main","source_pod":"frontend-a"}
+{"kubernetes_timestamp":"2026-03-14T10:00:01Z","message":"plain","source_container":"sidecar","source_pod":"frontend-b"}

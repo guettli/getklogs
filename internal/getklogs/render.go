@@ -11,6 +11,87 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+type structuredPayload struct {
+	KubernetesTimestamp string
+	SourceContainer     string
+	SourcePod           string
+	Message             any
+	HasMessage          bool
+	Log                 any
+	HasLog              bool
+	Extra               map[string]any
+}
+
+func newStructuredPayload(entry LogEntry, addSource bool) structuredPayload {
+	payload := structuredPayload{
+		KubernetesTimestamp: entry.Timestamp,
+	}
+	if addSource {
+		payload.SourceContainer = entry.ContainerName
+		payload.SourcePod = entry.PodName
+	}
+
+	return payload
+}
+
+func (p *structuredPayload) setMessage(message any) {
+	p.Message = message
+	p.HasMessage = true
+}
+
+func (p *structuredPayload) setLog(log any) {
+	p.Log = log
+	p.HasLog = true
+}
+
+func (p *structuredPayload) setExtra(key string, value any) {
+	if p.Extra == nil {
+		p.Extra = make(map[string]any)
+	}
+	p.Extra[key] = value
+}
+
+func (p structuredPayload) asMap() map[string]any {
+	size := len(p.Extra)
+	if p.KubernetesTimestamp != "" {
+		size++
+	}
+	if p.SourceContainer != "" {
+		size++
+	}
+	if p.SourcePod != "" {
+		size++
+	}
+	if p.HasMessage {
+		size++
+	}
+	if p.HasLog {
+		size++
+	}
+
+	payload := make(map[string]any, size)
+	if p.KubernetesTimestamp != "" {
+		payload["kubernetes_timestamp"] = p.KubernetesTimestamp
+	}
+	if p.SourceContainer != "" {
+		payload["source_container"] = p.SourceContainer
+	}
+	if p.SourcePod != "" {
+		payload["source_pod"] = p.SourcePod
+	}
+	if p.HasMessage {
+		payload["message"] = p.Message
+	}
+	if p.HasLog {
+		payload["log"] = p.Log
+	}
+	for key, value := range p.Extra {
+		payload[key] = value
+	}
+
+	return payload
+}
+
 func renderOutput(entries []LogEntry, options Options) ([]byte, error) {
 	switch options.Output {
 	case OutputFormatJSON, OutputFormatRaw:
@@ -47,7 +128,7 @@ func renderEntry(entry LogEntry, options Options) (string, error) {
 	}
 
 	payload := buildStructuredPayload(entry, options.AddSource)
-	encoded, err := json.Marshal(payload)
+	encoded, err := json.Marshal(payload.asMap())
 	if err != nil {
 		return "", fmt.Errorf("marshal log entry: %w", err)
 	}
@@ -65,9 +146,9 @@ func renderPlainEntry(entry LogEntry, addSource bool) string {
 }
 
 func renderYAMLOutput(entries []LogEntry, options Options) ([]byte, error) {
-	items := make([]any, 0, len(entries))
+	items := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
-		items = append(items, buildStructuredPayload(entry, options.AddSource))
+		items = append(items, buildStructuredPayload(entry, options.AddSource).asMap())
 	}
 
 	if len(items) == 0 {
@@ -82,35 +163,28 @@ func renderYAMLOutput(entries []LogEntry, options Options) ([]byte, error) {
 	return encoded, nil
 }
 
-func buildStructuredPayload(entry LogEntry, addSource bool) map[string]any {
-	payload := map[string]any{}
-	if entry.Timestamp != "" {
-		payload["kubernetes_timestamp"] = entry.Timestamp
-	}
-	if addSource {
-		payload["source_container"] = entry.ContainerName
-		payload["source_pod"] = entry.PodName
-	}
+func buildStructuredPayload(entry LogEntry, addSource bool) structuredPayload {
+	payload := newStructuredPayload(entry, addSource)
 
 	message := strings.TrimSpace(entry.messageText())
 	if message == "" {
-		payload["message"] = ""
+		payload.setMessage("")
 	} else {
 		var decoded any
 		if err := json.Unmarshal([]byte(message), &decoded); err == nil {
 			if object, ok := decoded.(map[string]any); ok {
 				for key, value := range object {
-					payload[key] = value
+					payload.setExtra(key, value)
 				}
 			} else {
-				payload["log"] = decoded
+				payload.setLog(decoded)
 			}
-		} else if mergeKlogPayload(payload, entry.Timestamp, message) {
-		} else if mergeLogfmtPayload(payload, message) {
-		} else if mergeAccessLogPayload(payload, message) {
-		} else if mergeSquidPayload(payload, message) {
+		} else if mergeKlogPayload(&payload, entry.Timestamp, message) {
+		} else if mergeLogfmtPayload(&payload, message) {
+		} else if mergeAccessLogPayload(&payload, message) {
+		} else if mergeSquidPayload(&payload, message) {
 		} else {
-			payload["message"] = entry.messageText()
+			payload.setMessage(entry.messageText())
 		}
 	}
 
@@ -150,42 +224,42 @@ var klogPrefixPattern = regexp.MustCompile(`^([IWEF]\d{4})\s+(\d{2}:\d{2}:\d{2}\
 var accessLogPattern = regexp.MustCompile(`^(\S+) (\S+) (\S+) \[([^\]]+)\] "([A-Z]+) ([^"]*?) ([^"]+)" (\d{3}) (\d+|-) "([^"]*)" "([^"]*)" "([^"]*)"$`)
 var squidLogPattern = regexp.MustCompile(`^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\|\s*(.*)$`)
 
-func mergeKlogPayload(payload map[string]any, kubernetesTimestamp, message string) bool {
+func mergeKlogPayload(payload *structuredPayload, kubernetesTimestamp, message string) bool {
 	matches := klogPrefixPattern.FindStringSubmatch(message)
 	if matches == nil {
 		return false
 	}
 
-	payload["level"] = matches[1]
+	payload.setExtra("level", matches[1])
 	if logTimestamp, ok := buildKlogTimestamp(kubernetesTimestamp, matches[1], matches[2]); ok {
-		payload["log_timestamp"] = logTimestamp
+		payload.setExtra("log_timestamp", logTimestamp)
 	} else {
-		payload["log_timestamp"] = matches[2]
+		payload.setExtra("log_timestamp", matches[2])
 	}
 	if threadID, err := strconv.Atoi(matches[3]); err == nil {
-		payload["thread_id"] = threadID
+		payload.setExtra("thread_id", threadID)
 	} else {
-		payload["thread_id"] = matches[3]
+		payload.setExtra("thread_id", matches[3])
 	}
-	payload["caller"] = matches[4]
+	payload.setExtra("caller", matches[4])
 
 	parsedMessage, values, ok := parseKlogBody(matches[5])
 	if !ok {
-		payload["message"] = message
+		payload.setMessage(message)
 		return true
 	}
 
 	if parsedMessage != "" {
-		payload["message"] = parsedMessage
+		payload.setMessage(parsedMessage)
 	}
 	for key, value := range values {
-		payload[key] = value
+		payload.setExtra(key, value)
 	}
 
 	return true
 }
 
-func mergeLogfmtPayload(payload map[string]any, message string) bool {
+func mergeLogfmtPayload(payload *structuredPayload, message string) bool {
 	values, ok := parseLogfmt(message)
 	if !ok || len(values) == 0 {
 		return false
@@ -194,64 +268,64 @@ func mergeLogfmtPayload(payload map[string]any, message string) bool {
 	for key, value := range values {
 		switch key {
 		case "msg":
-			payload["message"] = value
+			payload.setMessage(value)
 		case "time":
-			payload["log_timestamp"] = value
+			payload.setExtra("log_timestamp", value)
 		default:
-			payload[key] = value
+			payload.setExtra(key, value)
 		}
 	}
 
-	if _, ok := payload["message"]; !ok {
+	if !payload.HasMessage {
 		if value, ok := values["message"]; ok {
-			payload["message"] = value
+			payload.setMessage(value)
 		}
 	}
 
 	return true
 }
 
-func mergeAccessLogPayload(payload map[string]any, message string) bool {
+func mergeAccessLogPayload(payload *structuredPayload, message string) bool {
 	matches := accessLogPattern.FindStringSubmatch(message)
 	if matches == nil {
 		return false
 	}
 
-	payload["remote_addr"] = matches[1]
-	payload["remote_logname"] = nilIfDash(matches[2])
-	payload["remote_user"] = nilIfDash(matches[3])
-	payload["log_timestamp"] = matches[4]
-	payload["method"] = matches[5]
-	payload["request_uri"] = matches[6]
-	payload["protocol"] = matches[7]
+	payload.setExtra("remote_addr", matches[1])
+	payload.setExtra("remote_logname", nilIfDash(matches[2]))
+	payload.setExtra("remote_user", nilIfDash(matches[3]))
+	payload.setExtra("log_timestamp", matches[4])
+	payload.setExtra("method", matches[5])
+	payload.setExtra("request_uri", matches[6])
+	payload.setExtra("protocol", matches[7])
 	if status, err := strconv.Atoi(matches[8]); err == nil {
-		payload["status"] = status
+		payload.setExtra("status", status)
 	} else {
-		payload["status"] = matches[8]
+		payload.setExtra("status", matches[8])
 	}
 	if matches[9] == "-" {
-		payload["body_bytes_sent"] = nil
+		payload.setExtra("body_bytes_sent", nil)
 	} else if bytesSent, err := strconv.Atoi(matches[9]); err == nil {
-		payload["body_bytes_sent"] = bytesSent
+		payload.setExtra("body_bytes_sent", bytesSent)
 	} else {
-		payload["body_bytes_sent"] = matches[9]
+		payload.setExtra("body_bytes_sent", matches[9])
 	}
-	payload["referer"] = nilIfDash(matches[10])
-	payload["user_agent"] = nilIfDash(matches[11])
-	payload["forwarded_for"] = nilIfDash(matches[12])
-	payload["message"] = fmt.Sprintf("%s %s", matches[5], matches[6])
+	payload.setExtra("referer", nilIfDash(matches[10]))
+	payload.setExtra("user_agent", nilIfDash(matches[11]))
+	payload.setExtra("forwarded_for", nilIfDash(matches[12]))
+	payload.setMessage(fmt.Sprintf("%s %s", matches[5], matches[6]))
 
 	return true
 }
 
-func mergeSquidPayload(payload map[string]any, message string) bool {
+func mergeSquidPayload(payload *structuredPayload, message string) bool {
 	matches := squidLogPattern.FindStringSubmatch(message)
 	if matches == nil {
 		return false
 	}
 
-	payload["log_timestamp"] = matches[1]
-	payload["message"] = matches[2]
+	payload.setExtra("log_timestamp", matches[1])
+	payload.setMessage(matches[2])
 
 	return true
 }

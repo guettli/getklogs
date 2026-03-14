@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -60,17 +61,40 @@ func (c *Cluster) ListWorkloads(ctx context.Context, namespace string) ([]Worklo
 		scope = metav1.NamespaceAll
 	}
 
-	deployments, err := c.client.AppsV1().Deployments(scope).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("list deployments: %w", err)
-	}
-	daemonSets, err := c.client.AppsV1().DaemonSets(scope).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("list daemonsets: %w", err)
-	}
-	statefulSets, err := c.client.AppsV1().StatefulSets(scope).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("list statefulsets: %w", err)
+	var (
+		deployments  *appsv1.DeploymentList
+		daemonSets   *appsv1.DaemonSetList
+		statefulSets *appsv1.StatefulSetList
+	)
+
+	group, ctx := errgroup.WithContext(ctx)
+	group.Go(func() error {
+		list, err := c.client.AppsV1().Deployments(scope).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return fmt.Errorf("list deployments: %w", err)
+		}
+		deployments = list
+		return nil
+	})
+	group.Go(func() error {
+		list, err := c.client.AppsV1().DaemonSets(scope).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return fmt.Errorf("list daemonsets: %w", err)
+		}
+		daemonSets = list
+		return nil
+	})
+	group.Go(func() error {
+		list, err := c.client.AppsV1().StatefulSets(scope).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return fmt.Errorf("list statefulsets: %w", err)
+		}
+		statefulSets = list
+		return nil
+	})
+
+	if err := group.Wait(); err != nil {
+		return nil, err
 	}
 
 	workloads := make([]Workload, 0, len(deployments.Items)+len(daemonSets.Items)+len(statefulSets.Items))

@@ -109,13 +109,8 @@ func (a App) runForTarget(ctx context.Context, selected Workload, options Option
 	if _, err := fmt.Fprintf(a.Stderr, "Running for namespace %q on %s/%s\n", selected.Namespace, selected.Kind, selected.Name); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(a.Stderr, "Pods:"); err != nil {
+	if _, err := fmt.Fprintf(a.Stderr, "Pods: %s\n", strings.Join(podNames, " ")); err != nil {
 		return err
-	}
-	for _, podName := range podNames {
-		if _, err := fmt.Fprintln(a.Stderr, podName); err != nil {
-			return err
-		}
 	}
 	if targets.RolloutWarning != "" {
 		if _, err := fmt.Fprintln(a.Stderr, targets.RolloutWarning); err != nil {
@@ -138,14 +133,18 @@ func (a App) runForTarget(ctx context.Context, selected Workload, options Option
 
 	if options.Stdout {
 		if len(content) == 0 {
-			return nil
+			_, err := fmt.Fprintln(a.Stderr)
+			return err
 		}
 		if hasPreviousStdoutOutput && options.Output == OutputFormatYAML {
 			if _, err := io.WriteString(a.Stdout, "---\n"); err != nil {
 				return err
 			}
 		}
-		_, err = a.Stdout.Write(content)
+		if _, err := a.Stdout.Write(content); err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(a.Stderr)
 		return err
 	}
 
@@ -155,11 +154,18 @@ func (a App) runForTarget(ctx context.Context, selected Workload, options Option
 		return err
 	}
 
+	var writeErr error
 	if len(content) == 0 {
-		return os.WriteFile(outputFile, nil, 0o644)
+		writeErr = os.WriteFile(outputFile, nil, 0o644)
+	} else {
+		writeErr = os.WriteFile(outputFile, content, 0o644)
+	}
+	if writeErr != nil {
+		return writeErr
 	}
 
-	return os.WriteFile(outputFile, content, 0o644)
+	_, err = fmt.Fprintln(a.Stderr)
+	return err
 }
 
 func (a App) listTargets(ctx context.Context, options Options) ([]Workload, error) {
@@ -189,6 +195,10 @@ func noTargetsFoundError(options Options) error {
 		return fmt.Errorf("no pods found in namespace %q", options.Namespace)
 	case options.Pod:
 		return errors.New("no pods found in any namespace")
+	case options.All && options.Namespace != "":
+		return fmt.Errorf("no Deployment/DaemonSet/StatefulSet or standalone pod found in namespace %q", options.Namespace)
+	case options.All:
+		return errors.New("no Deployment/DaemonSet/StatefulSet or standalone pod found in any namespace")
 	case options.Namespace != "":
 		return fmt.Errorf("no Deployment/DaemonSet/StatefulSet found in namespace %q", options.Namespace)
 	default:
@@ -209,7 +219,7 @@ func (a App) selectTargets(targets []Workload, options Options) ([]Workload, err
 			return matches, nil
 		}
 
-		selected, err := a.chooseFromMatches(matches)
+		selected, err := a.chooseWorkload(matches)
 		if err != nil {
 			return nil, err
 		}
@@ -220,39 +230,14 @@ func (a App) selectTargets(targets []Workload, options Options) ([]Workload, err
 		return targets, nil
 	}
 
-	selected, err := a.selectWorkload(targets, options.TermQuery)
+	selected, err := a.chooseWorkload(targets)
 	if err != nil {
 		return nil, err
 	}
 	return []Workload{selected}, nil
 }
 
-func (a App) chooseFromMatches(workloads []Workload) (Workload, error) {
-	chooser := a.ChooseWorkload
-	if chooser == nil {
-		chooser = chooseWorkloadInteractively
-	}
-
-	return chooser(a.Stdin, a.Stdout, workloads)
-}
-
-func (a App) selectWorkload(workloads []Workload, term string) (Workload, error) {
-	if term != "" {
-		matches := FilterWorkloads(workloads, term)
-		if len(matches) == 0 {
-			return Workload{}, fmt.Errorf("no workload matches '*%s*'", term)
-		}
-		if len(matches) > 1 {
-			var builder strings.Builder
-			fmt.Fprintf(&builder, "multiple workloads match '*%s*':\n", term)
-			for _, match := range matches {
-				fmt.Fprintf(&builder, "%s\t%s\t%s\t%s\n", match.Namespace, match.Kind, match.Name, match.ReadyText())
-			}
-			return Workload{}, errors.New(strings.TrimRight(builder.String(), "\n"))
-		}
-		return matches[0], nil
-	}
-
+func (a App) chooseWorkload(workloads []Workload) (Workload, error) {
 	chooser := a.ChooseWorkload
 	if chooser == nil {
 		chooser = chooseWorkloadInteractively

@@ -36,6 +36,16 @@ func TestNormalizeOptionsSetsDefaultOutputFormat(t *testing.T) {
 	}
 }
 
+func TestNoTargetsFoundErrorMentionsStandalonePodsForAll(t *testing.T) {
+	err := noTargetsFoundError(Options{All: true, Namespace: "team-a"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if err.Error() != `no Deployment/DaemonSet/StatefulSet or standalone pod found in namespace "team-a"` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestFilterWorkloadsMatchesNamespaceKindAndNameCaseInsensitive(t *testing.T) {
 	workloads := []Workload{
 		{Namespace: "alpha", Kind: "Deployment", Name: "frontend"},
@@ -173,7 +183,7 @@ func TestChooseWorkloadWithPromptMapsAbortError(t *testing.T) {
 	}
 }
 
-func TestAppSelectWorkloadUsesCustomChooserWhenTermIsEmpty(t *testing.T) {
+func TestAppChooseWorkloadUsesCustomChooser(t *testing.T) {
 	expected := Workload{Namespace: "team-b", Kind: "StatefulSet", Name: "database"}
 	app := App{
 		ChooseWorkload: func(stdin io.Reader, stdout io.Writer, workloads []Workload) (Workload, error) {
@@ -181,12 +191,12 @@ func TestAppSelectWorkloadUsesCustomChooserWhenTermIsEmpty(t *testing.T) {
 		},
 	}
 
-	selected, err := app.selectWorkload([]Workload{
+	selected, err := app.chooseWorkload([]Workload{
 		{Namespace: "team-a", Kind: "Deployment", Name: "frontend"},
 		expected,
-	}, "")
+	})
 	if err != nil {
-		t.Fatalf("selectWorkload returned error: %v", err)
+		t.Fatalf("chooseWorkload returned error: %v", err)
 	}
 	if selected != expected {
 		t.Fatalf("expected %+v, got %+v", expected, selected)
@@ -727,8 +737,14 @@ func TestAppRunWritesJSONLinesByDefault(t *testing.T) {
 		t.Fatalf("unexpected file output:\n%s", string(content))
 	}
 
+	if !strings.Contains(stderr.String(), "Pods: frontend-a frontend-b\n") {
+		t.Fatalf("expected stderr to contain compact pod list, got %q", stderr.String())
+	}
 	if !strings.Contains(stderr.String(), "Writing logs to frontend--team-a-2026-03-14_10-20-30Z.log") {
 		t.Fatalf("expected stderr to mention output file, got %q", stderr.String())
+	}
+	if !strings.HasSuffix(stderr.String(), "\n\n") {
+		t.Fatalf("expected stderr to end with a blank line, got %q", stderr.String())
 	}
 }
 
@@ -900,6 +916,12 @@ func TestAppRunWritesToStdoutWhenRequested(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), "Writing logs to") {
 		t.Fatalf("did not expect file output message, got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Pods: frontend-a\n") {
+		t.Fatalf("expected stderr to contain compact pod list, got %q", stderr.String())
+	}
+	if !strings.HasSuffix(stderr.String(), "\n\n") {
+		t.Fatalf("expected stderr to end with a blank line, got %q", stderr.String())
 	}
 }
 

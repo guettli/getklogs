@@ -14,7 +14,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/klog/v2"
 )
 
 type Cluster struct {
@@ -22,6 +24,10 @@ type Cluster struct {
 }
 
 func NewCluster() (*Cluster, error) {
+	// client-go may emit throttling notices through klog; keep command output focused on getklogs itself.
+	klog.LogToStderr(false)
+	klog.SetOutput(io.Discard)
+
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	configOverrides := &clientcmd.ConfigOverrides{}
 	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
@@ -30,6 +36,7 @@ func NewCluster() (*Cluster, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load kubeconfig: %w", err)
 	}
+	config = configureRESTClient(config)
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
@@ -37,6 +44,15 @@ func NewCluster() (*Cluster, error) {
 	}
 
 	return &Cluster{client: clientset}, nil
+}
+
+func configureRESTClient(config *rest.Config) *rest.Config {
+	// Kubernetes apiservers handle fairness and throttling themselves.
+	// Disable the client-go limiter to avoid local throttling delays.
+	config.QPS = -1
+	config.RateLimiter = nil
+
+	return config
 }
 
 func (c *Cluster) ListWorkloads(ctx context.Context, namespace string) ([]Workload, error) {

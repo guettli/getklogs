@@ -1,6 +1,6 @@
 # getklogs
 
-`getklogs` fetches logs for all pods of a Deployment, DaemonSet, or StatefulSet and sorts them by the Kubernetes timestamp.
+`getklogs` fetches workload and pod logs and sorts them by Kubernetes timestamp.
 
 Repository: <https://github.com/guettli/getklogs>
 
@@ -16,10 +16,15 @@ The block below is generated from `getklogs --help` via `task readme`.
 
 <!-- usage:start -->
 ```text
-Fetch logs for the pods of a Deployment, DaemonSet, or StatefulSet and sort them by Kubernetes timestamp.
+Fetch logs for Kubernetes workloads and pods and sort them by Kubernetes timestamp.
 
-If [term] is given, workloads are matched case-insensitively via *term* across workload name, namespace, and kind.
+Here, "workload" means a Deployment, DaemonSet, or StatefulSet.
+
+If [term] is given, targets are matched case-insensitively via *term* across workload name, namespace, and kind.
 Use --pod to match pods by name instead.
+Use --all to process all matches.
+Without --pod, getklogs includes both workloads and standalone pods.
+Standalone pods are pods that do not belong to a Deployment, DaemonSet, or StatefulSet.
 
 By default, getklogs writes the result to a timestamped file such as:
   capi-kubeadm-bootstrap-controller-manager--mgt-system-2026-03-14_13-09-25Z.log
@@ -36,7 +41,7 @@ Examples:
 
 Flags:
       --add-source         Include pod and container source information in output
-      --all                Process all matching targets without opening the interactive chooser
+      --all                Process all matching targets; without --pod, also include standalone pods
   -h, --help               help for getklogs
   -n, --namespace string   Kubernetes namespace (optional; if omitted: all namespaces)
       --no-to-json         Keep original log lines instead of converting output to JSON lines

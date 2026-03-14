@@ -38,6 +38,11 @@ type ContainerRef struct {
 	ContainerName string
 }
 
+type WorkloadTargets struct {
+	Containers     []ContainerRef
+	RolloutWarning string
+}
+
 type LogEntry struct {
 	Timestamp     string
 	PodName       string
@@ -48,7 +53,9 @@ type LogEntry struct {
 
 type ClusterAPI interface {
 	ListWorkloads(ctx context.Context, namespace string) ([]Workload, error)
-	ListContainersForWorkload(ctx context.Context, workload Workload) ([]ContainerRef, error)
+	ListPods(ctx context.Context, namespace string) ([]Workload, error)
+	ListStandalonePods(ctx context.Context, namespace string) ([]Workload, error)
+	ListContainersForWorkload(ctx context.Context, workload Workload) (WorkloadTargets, error)
 	GetLogs(ctx context.Context, namespace, podName, containerName string, since time.Duration) ([]LogEntry, error)
 }
 
@@ -66,26 +73,34 @@ type WorkloadChooser func(stdin io.Reader, stdout io.Writer, workloads []Workloa
 func (a App) Run(ctx context.Context, options Options) error {
 	options = NormalizeOptions(options)
 
-	workloads, err := a.Cluster.ListWorkloads(ctx, options.Namespace)
+	targets, err := a.listTargets(ctx, options)
 	if err != nil {
 		return err
 	}
-	if len(workloads) == 0 {
-		if options.Namespace != "" {
-			return fmt.Errorf("no Deployment/DaemonSet/StatefulSet found in namespace %q", options.Namespace)
+	if len(targets) == 0 {
+		return noTargetsFoundError(options)
+	}
+
+	selectedTargets, err := a.selectTargets(targets, options)
+	if err != nil {
+		return err
+	}
+
+	for index, selected := range selectedTargets {
+		if err := a.runForTarget(ctx, selected, options, index > 0); err != nil {
+			return err
 		}
-		return errors.New("no Deployment/DaemonSet/StatefulSet found in any namespace")
 	}
 
-	selected, err := a.selectWorkload(workloads, options.TermQuery)
+	return nil
+}
+
+func (a App) runForTarget(ctx context.Context, selected Workload, options Options, hasPreviousStdoutOutput bool) error {
+	targets, err := a.Cluster.ListContainersForWorkload(ctx, selected)
 	if err != nil {
 		return err
 	}
-
-	containers, err := a.Cluster.ListContainersForWorkload(ctx, selected)
-	if err != nil {
-		return err
-	}
+	containers := targets.Containers
 	if len(containers) == 0 {
 		return fmt.Errorf("no pods found for %s/%s in namespace %q", selected.Kind, selected.Name, selected.Namespace)
 	}
@@ -102,16 +117,38 @@ func (a App) Run(ctx context.Context, options Options) error {
 			return err
 		}
 	}
+	if targets.RolloutWarning != "" {
+		if _, err := fmt.Fprintln(a.Stderr, targets.RolloutWarning); err != nil {
+			return err
+		}
+	}
 
 	entries, err := a.collectLogs(ctx, selected.Namespace, containers, options.Since)
 	if err != nil {
 		return err
+	}
+	if options.TailLines > 0 && len(entries) > options.TailLines {
+		entries = entries[len(entries)-options.TailLines:]
 	}
 
 	content, err := renderOutput(entries, options)
 	if err != nil {
 		return err
 	}
+
+	if options.Stdout {
+		if len(content) == 0 {
+			return nil
+		}
+		if hasPreviousStdoutOutput && options.Output == OutputFormatYAML {
+			if _, err := io.WriteString(a.Stdout, "---\n"); err != nil {
+				return err
+			}
+		}
+		_, err = a.Stdout.Write(content)
+		return err
+	}
+
 	outputFile := buildOutputFilename(selected, a.now().UTC(), options.Output)
 
 	if _, err := fmt.Fprintf(a.Stderr, "Writing logs to %s\n", outputFile); err != nil {
@@ -123,6 +160,80 @@ func (a App) Run(ctx context.Context, options Options) error {
 	}
 
 	return os.WriteFile(outputFile, content, 0o644)
+}
+
+func (a App) listTargets(ctx context.Context, options Options) ([]Workload, error) {
+	if options.Pod {
+		return a.Cluster.ListPods(ctx, options.Namespace)
+	}
+
+	workloads, err := a.Cluster.ListWorkloads(ctx, options.Namespace)
+	if err != nil {
+		return nil, err
+	}
+	if !options.All {
+		return workloads, nil
+	}
+
+	standalonePods, err := a.Cluster.ListStandalonePods(ctx, options.Namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(workloads, standalonePods...), nil
+}
+
+func noTargetsFoundError(options Options) error {
+	switch {
+	case options.Pod && options.Namespace != "":
+		return fmt.Errorf("no pods found in namespace %q", options.Namespace)
+	case options.Pod:
+		return errors.New("no pods found in any namespace")
+	case options.Namespace != "":
+		return fmt.Errorf("no Deployment/DaemonSet/StatefulSet found in namespace %q", options.Namespace)
+	default:
+		return errors.New("no Deployment/DaemonSet/StatefulSet found in any namespace")
+	}
+}
+
+func (a App) selectTargets(targets []Workload, options Options) ([]Workload, error) {
+	if options.TermQuery != "" {
+		matches := FilterWorkloads(targets, options.TermQuery)
+		if len(matches) == 0 {
+			return nil, fmt.Errorf("no target matches '*%s*'", options.TermQuery)
+		}
+		if options.All {
+			return matches, nil
+		}
+		if len(matches) == 1 {
+			return matches, nil
+		}
+
+		selected, err := a.chooseFromMatches(matches)
+		if err != nil {
+			return nil, err
+		}
+		return []Workload{selected}, nil
+	}
+
+	if options.All {
+		return targets, nil
+	}
+
+	selected, err := a.selectWorkload(targets, options.TermQuery)
+	if err != nil {
+		return nil, err
+	}
+	return []Workload{selected}, nil
+}
+
+func (a App) chooseFromMatches(workloads []Workload) (Workload, error) {
+	chooser := a.ChooseWorkload
+	if chooser == nil {
+		chooser = chooseWorkloadInteractively
+	}
+
+	return chooser(a.Stdin, a.Stdout, workloads)
 }
 
 func (a App) selectWorkload(workloads []Workload, term string) (Workload, error) {

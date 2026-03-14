@@ -22,12 +22,15 @@ func NewRootCmd(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 		Long: `Fetch logs for the pods of a Deployment, DaemonSet, or StatefulSet and sort them by Kubernetes timestamp.
 
 If [term] is given, workloads are matched case-insensitively via *term* across workload name, namespace, and kind.
+Use --pod to match pods by name instead.
 
 By default, getklogs writes the result to a timestamped file such as:
   capi-kubeadm-bootstrap-controller-manager--mgt-system-2026-03-14_13-09-25Z.log`,
 		Example: `  getklogs
   getklogs kubeadm-bootstrap
-  getklogs -n kube-system coredns`,
+  getklogs --pod apiserver
+  getklogs --all
+  getklogs --stdout --tail 50 -n kube-system coredns`,
 		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -58,8 +61,12 @@ By default, getklogs writes the result to a timestamped file such as:
 
 	cmd.Flags().StringVarP(&options.Namespace, "namespace", "n", "", "Kubernetes namespace (optional; if omitted: all namespaces)")
 	cmd.Flags().DurationVar(&options.Since, "since", options.Since, "Return logs newer than a relative duration like 5s, 2m, or 3h")
+	cmd.Flags().BoolVar(&options.Pod, "pod", false, "Match pods by name instead of workloads")
+	cmd.Flags().BoolVar(&options.All, "all", false, "Process all matching targets without opening the interactive chooser")
+	cmd.Flags().BoolVar(&options.Stdout, "stdout", false, "Write output to stdout instead of creating files")
 	cmd.Flags().BoolVar(&options.AddSource, "add-source", false, "Include pod and container source information in output")
 	cmd.Flags().BoolVar(&options.NoToJSON, "no-to-json", false, "Keep original log lines instead of converting output to JSON lines")
+	cmd.Flags().IntVar(&options.TailLines, "tail", 0, "Only include the last N combined log lines per target")
 	cmd.Flags().StringVarP(&options.Output, "output", "o", options.Output, "Output format: json or yaml")
 
 	return cmd

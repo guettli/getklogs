@@ -14,8 +14,12 @@ type Options struct {
 	Since     time.Duration
 	TermQuery string
 
+	Pod       bool
+	All       bool
+	Stdout    bool
 	AddSource bool
 	NoToJSON  bool
+	TailLines int
 	Output    string
 }
 

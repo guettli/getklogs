@@ -116,21 +116,92 @@ func replicasOrZero(replicas *int32) int32 {
 	return *replicas
 }
 
-func (c *Cluster) ListContainersForWorkload(ctx context.Context, workload Workload) ([]ContainerRef, error) {
-	pods, err := c.client.CoreV1().Pods(workload.Namespace).List(ctx, metav1.ListOptions{})
+func (c *Cluster) ListPods(ctx context.Context, namespace string) ([]Workload, error) {
+	pods, err := c.listPods(ctx, namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]Workload, 0, len(pods))
+	for _, pod := range pods {
+		items = append(items, podAsWorkload(pod))
+	}
+	return items, nil
+}
+
+func (c *Cluster) ListStandalonePods(ctx context.Context, namespace string) ([]Workload, error) {
+	pods, err := c.listPods(ctx, namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	var items []Workload
+	for _, pod := range pods {
+		if _, ok := firstControllerOwner(pod.OwnerReferences); ok {
+			continue
+		}
+		items = append(items, podAsWorkload(pod))
+	}
+	return items, nil
+}
+
+func (c *Cluster) listPods(ctx context.Context, namespace string) ([]corev1.Pod, error) {
+	scope := namespace
+	if scope == "" {
+		scope = metav1.NamespaceAll
+	}
+
+	pods, err := c.client.CoreV1().Pods(scope).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("list pods: %w", err)
 	}
+
+	items := slices.Clone(pods.Items)
+	slices.SortFunc(items, func(left, right corev1.Pod) int {
+		switch {
+		case left.Namespace < right.Namespace:
+			return -1
+		case left.Namespace > right.Namespace:
+			return 1
+		case left.Name < right.Name:
+			return -1
+		case left.Name > right.Name:
+			return 1
+		default:
+			return 0
+		}
+	})
+
+	return items, nil
+}
+
+func (c *Cluster) ListContainersForWorkload(ctx context.Context, workload Workload) (WorkloadTargets, error) {
+	pods, err := c.client.CoreV1().Pods(workload.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return WorkloadTargets{}, fmt.Errorf("list pods: %w", err)
+	}
+	if workload.Kind == "Pod" {
+		selectedPods := SelectPodsForWorkload(pods.Items, nil, workload)
+		if len(selectedPods) == 0 {
+			return WorkloadTargets{}, nil
+		}
+		return buildTargetsForPods(selectedPods, workload), nil
+	}
+
 	replicaSets, err := c.client.AppsV1().ReplicaSets(workload.Namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("list replicasets: %w", err)
+		return WorkloadTargets{}, fmt.Errorf("list replicasets: %w", err)
 	}
 
 	selectedPods := SelectPodsForWorkload(pods.Items, replicaSets.Items, workload)
 	if len(selectedPods) == 0 {
-		return nil, nil
+		return WorkloadTargets{}, nil
 	}
 
+	return buildTargetsForPods(selectedPods, workload), nil
+}
+
+func buildTargetsForPods(selectedPods []corev1.Pod, workload Workload) WorkloadTargets {
 	var containers []ContainerRef
 	for _, pod := range selectedPods {
 		for _, name := range containerNamesFromStatus(pod) {
@@ -156,10 +227,22 @@ func (c *Cluster) ListContainersForWorkload(ctx context.Context, workload Worklo
 		}
 	})
 
-	return containers, nil
+	return WorkloadTargets{
+		Containers:     containers,
+		RolloutWarning: rolloutWarningForWorkload(selectedPods, workload),
+	}
 }
 
 func SelectPodsForWorkload(pods []corev1.Pod, replicaSets []appsv1.ReplicaSet, workload Workload) []corev1.Pod {
+	if workload.Kind == "Pod" {
+		for _, pod := range pods {
+			if pod.Namespace == workload.Namespace && pod.Name == workload.Name {
+				return []corev1.Pod{pod}
+			}
+		}
+		return nil
+	}
+
 	replicaSetOwners := make(map[string]metav1.OwnerReference, len(replicaSets))
 	for _, replicaSet := range replicaSets {
 		owner, ok := firstControllerOwner(replicaSet.OwnerReferences)
@@ -192,6 +275,37 @@ func SelectPodsForWorkload(pods []corev1.Pod, replicaSets []appsv1.ReplicaSet, w
 	})
 
 	return selected
+}
+
+func podAsWorkload(pod corev1.Pod) Workload {
+	totalContainers := len(containerNamesFromStatus(pod))
+	return Workload{
+		Namespace: pod.Namespace,
+		Kind:      "Pod",
+		Name:      pod.Name,
+		Ready:     int32(readyContainerCount(pod)),
+		Desired:   int32(totalContainers),
+	}
+}
+
+func readyContainerCount(pod corev1.Pod) int {
+	count := 0
+	for _, status := range pod.Status.InitContainerStatuses {
+		if status.Ready {
+			count++
+		}
+	}
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.Ready {
+			count++
+		}
+	}
+	for _, status := range pod.Status.EphemeralContainerStatuses {
+		if status.Ready {
+			count++
+		}
+	}
+	return count
 }
 
 func firstControllerOwner(owners []metav1.OwnerReference) (metav1.OwnerReference, bool) {
@@ -229,6 +343,59 @@ func containerNamesFromStatus(pod corev1.Pod) []string {
 	}
 
 	return names
+}
+
+func rolloutWarningForWorkload(pods []corev1.Pod, workload Workload) string {
+	switch workload.Kind {
+	case "Deployment":
+		replicaSets := ownerNamesForKind(pods, "ReplicaSet")
+		if len(replicaSets) > 1 {
+			return fmt.Sprintf("Warning: rollout appears to be in progress; logs include pods from multiple ReplicaSets: %s", strings.Join(replicaSets, ", "))
+		}
+	case "DaemonSet", "StatefulSet":
+		revisions := uniqueLabelValues(pods, "controller-revision-hash")
+		if len(revisions) > 1 {
+			return fmt.Sprintf("Warning: rollout appears to be in progress; logs include pods from multiple revisions: %s", strings.Join(revisions, ", "))
+		}
+	}
+
+	return ""
+}
+
+func ownerNamesForKind(pods []corev1.Pod, kind string) []string {
+	set := make(map[string]struct{})
+	for _, pod := range pods {
+		owner, ok := firstControllerOwner(pod.OwnerReferences)
+		if !ok || owner.Kind != kind || owner.Name == "" {
+			continue
+		}
+		set[owner.Name] = struct{}{}
+	}
+
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+func uniqueLabelValues(pods []corev1.Pod, key string) []string {
+	set := make(map[string]struct{})
+	for _, pod := range pods {
+		value := pod.Labels[key]
+		if value == "" {
+			continue
+		}
+		set[value] = struct{}{}
+	}
+
+	values := make([]string, 0, len(set))
+	for value := range set {
+		values = append(values, value)
+	}
+	slices.Sort(values)
+	return values
 }
 
 func (c *Cluster) GetLogs(ctx context.Context, namespace, podName, containerName string, since time.Duration) ([]LogEntry, error) {

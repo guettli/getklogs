@@ -193,6 +193,53 @@ func TestAppSelectWorkloadUsesCustomChooserWhenTermIsEmpty(t *testing.T) {
 	}
 }
 
+func TestAppSelectTargetsUsesChooserForMultipleTermMatches(t *testing.T) {
+	expected := Workload{Namespace: "team-b", Kind: "StatefulSet", Name: "database"}
+	app := App{
+		ChooseWorkload: func(stdin io.Reader, stdout io.Writer, workloads []Workload) (Workload, error) {
+			if len(workloads) != 2 {
+				t.Fatalf("expected 2 chooser workloads, got %d", len(workloads))
+			}
+			return expected, nil
+		},
+	}
+
+	selected, err := app.selectTargets([]Workload{
+		{Namespace: "team-a", Kind: "Deployment", Name: "database-api"},
+		expected,
+	}, Options{TermQuery: "data"})
+	if err != nil {
+		t.Fatalf("selectTargets returned error: %v", err)
+	}
+	if len(selected) != 1 || selected[0] != expected {
+		t.Fatalf("expected %+v, got %+v", expected, selected)
+	}
+}
+
+func TestAppListTargetsIncludesStandalonePodsWhenAllIsSet(t *testing.T) {
+	app := App{
+		Cluster: fakeCluster{
+			workloads: []Workload{
+				{Namespace: "team-a", Kind: "Deployment", Name: "frontend"},
+			},
+			standalonePods: []Workload{
+				{Namespace: "kube-system", Kind: "Pod", Name: "kube-apiserver-node-1"},
+			},
+		},
+	}
+
+	targets, err := app.listTargets(context.Background(), Options{All: true, TermQuery: "api"})
+	if err != nil {
+		t.Fatalf("listTargets returned error: %v", err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("expected 2 targets, got %d", len(targets))
+	}
+	if targets[1].Kind != "Pod" || targets[1].Name != "kube-apiserver-node-1" {
+		t.Fatalf("unexpected standalone pod target: %+v", targets[1])
+	}
+}
+
 func TestSelectPodsForWorkloadFollowsReplicaSetOwnerToDeployment(t *testing.T) {
 	controller := true
 	pods := []corev1.Pod{
@@ -241,6 +288,55 @@ func TestSelectPodsForWorkloadFollowsReplicaSetOwnerToDeployment(t *testing.T) {
 	}
 	if selected[0].Name != "frontend-abc" {
 		t.Fatalf("expected frontend-abc, got %q", selected[0].Name)
+	}
+}
+
+func TestRolloutWarningForDeploymentWithMultipleReplicaSets(t *testing.T) {
+	controller := true
+	pods := []corev1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "frontend-old",
+				OwnerReferences: []metav1.OwnerReference{{
+					Kind:       "ReplicaSet",
+					Name:       "frontend-rs-old",
+					Controller: &controller,
+				}},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "frontend-new",
+				OwnerReferences: []metav1.OwnerReference{{
+					Kind:       "ReplicaSet",
+					Name:       "frontend-rs-new",
+					Controller: &controller,
+				}},
+			},
+		},
+	}
+
+	warning := rolloutWarningForWorkload(pods, Workload{Kind: "Deployment", Name: "frontend"})
+	if !strings.Contains(warning, "multiple ReplicaSets") {
+		t.Fatalf("expected deployment rollout warning, got %q", warning)
+	}
+	if !strings.Contains(warning, "frontend-rs-new") || !strings.Contains(warning, "frontend-rs-old") {
+		t.Fatalf("expected ReplicaSet names in warning, got %q", warning)
+	}
+}
+
+func TestRolloutWarningForStatefulSetWithMultipleRevisions(t *testing.T) {
+	pods := []corev1.Pod{
+		{ObjectMeta: metav1.ObjectMeta{Name: "db-0", Labels: map[string]string{"controller-revision-hash": "db-a"}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "db-1", Labels: map[string]string{"controller-revision-hash": "db-b"}}},
+	}
+
+	warning := rolloutWarningForWorkload(pods, Workload{Kind: "StatefulSet", Name: "db"})
+	if !strings.Contains(warning, "multiple revisions") {
+		t.Fatalf("expected statefulset rollout warning, got %q", warning)
+	}
+	if !strings.Contains(warning, "db-a") || !strings.Contains(warning, "db-b") {
+		t.Fatalf("expected revision hashes in warning, got %q", warning)
 	}
 }
 
@@ -562,10 +658,10 @@ func TestAppRunWritesJSONLinesByDefault(t *testing.T) {
 			Kind:      "Deployment",
 			Name:      "frontend",
 		}},
-		containers: []ContainerRef{
+		targets: WorkloadTargets{Containers: []ContainerRef{
 			{PodName: "frontend-b", ContainerName: "sidecar"},
 			{PodName: "frontend-a", ContainerName: "main"},
-		},
+		}},
 		logs: map[string][]LogEntry{
 			"frontend-b/sidecar": {{
 				Timestamp:     "2026-03-14T10:00:01Z",
@@ -643,9 +739,9 @@ func TestAppRunWritesYAMLWhenRequested(t *testing.T) {
 			Kind:      "Deployment",
 			Name:      "frontend",
 		}},
-		containers: []ContainerRef{
+		targets: WorkloadTargets{Containers: []ContainerRef{
 			{PodName: "frontend-a", ContainerName: "main"},
-		},
+		}},
 		logs: map[string][]LogEntry{
 			"frontend-a/main": {{
 				Timestamp:     "2026-03-14T10:00:00Z",
@@ -713,9 +809,9 @@ func TestAppRunAddsSourceWhenRequested(t *testing.T) {
 			Kind:      "Deployment",
 			Name:      "frontend",
 		}},
-		containers: []ContainerRef{
+		targets: WorkloadTargets{Containers: []ContainerRef{
 			{PodName: "frontend-a", ContainerName: "main"},
-		},
+		}, RolloutWarning: "Warning: rollout appears to be in progress; logs include pods from multiple ReplicaSets: frontend-old, frontend-new"},
 		logs: map[string][]LogEntry{
 			"frontend-a/main": {{
 				Timestamp:     "2026-03-14T10:00:00Z",
@@ -766,22 +862,193 @@ func TestAppRunAddsSourceWhenRequested(t *testing.T) {
 	if string(content) != expected {
 		t.Fatalf("unexpected file output:\n%s", string(content))
 	}
+	if !strings.Contains(stderr.String(), "Warning: rollout appears to be in progress") {
+		t.Fatalf("expected rollout warning in stderr, got %q", stderr.String())
+	}
+}
+
+func TestAppRunWritesToStdoutWhenRequested(t *testing.T) {
+	cluster := fakeCluster{
+		workloads: []Workload{{
+			Namespace: "team-a",
+			Kind:      "Deployment",
+			Name:      "frontend",
+		}},
+		targetsByTarget: map[string]WorkloadTargets{
+			"Deployment/team-a/frontend": {Containers: []ContainerRef{{PodName: "frontend-a", ContainerName: "main"}}},
+		},
+		logs: map[string][]LogEntry{
+			"frontend-a/main": {{
+				Timestamp:     "2026-03-14T10:00:00Z",
+				PodName:       "frontend-a",
+				ContainerName: "main",
+				Line:          "2026-03-14T10:00:00Z first",
+				Message:       "first",
+			}},
+		},
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{Cluster: cluster, Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr}
+
+	if err := app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, Stdout: true}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"message":"first"`) {
+		t.Fatalf("expected stdout output, got %q", stdout.String())
+	}
+	if strings.Contains(stderr.String(), "Writing logs to") {
+		t.Fatalf("did not expect file output message, got %q", stderr.String())
+	}
+}
+
+func TestAppRunTailsCombinedEntries(t *testing.T) {
+	cluster := fakeCluster{
+		workloads: []Workload{{Namespace: "team-a", Kind: "Deployment", Name: "frontend"}},
+		targetsByTarget: map[string]WorkloadTargets{
+			"Deployment/team-a/frontend": {Containers: []ContainerRef{
+				{PodName: "frontend-a", ContainerName: "main"},
+				{PodName: "frontend-b", ContainerName: "main"},
+			}},
+		},
+		logs: map[string][]LogEntry{
+			"frontend-a/main": {{Timestamp: "2026-03-14T10:00:00Z", PodName: "frontend-a", ContainerName: "main", Line: "2026-03-14T10:00:00Z first", Message: "first"}},
+			"frontend-b/main": {{Timestamp: "2026-03-14T10:00:01Z", PodName: "frontend-b", ContainerName: "main", Line: "2026-03-14T10:00:01Z second", Message: "second"}},
+		},
+	}
+
+	var stdout bytes.Buffer
+	app := App{Cluster: cluster, Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &bytes.Buffer{}}
+
+	if err := app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, Stdout: true, TailLines: 1, NoToJSON: true}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if strings.TrimSpace(stdout.String()) != "2026-03-14T10:00:01Z second" {
+		t.Fatalf("unexpected tailed stdout: %q", stdout.String())
+	}
+}
+
+func TestAppRunAllWritesSeparateFiles(t *testing.T) {
+	cluster := fakeCluster{
+		workloads: []Workload{
+			{Namespace: "team-a", Kind: "Deployment", Name: "frontend"},
+			{Namespace: "team-a", Kind: "StatefulSet", Name: "database"},
+		},
+		targetsByTarget: map[string]WorkloadTargets{
+			"Deployment/team-a/frontend":  {Containers: []ContainerRef{{PodName: "frontend-a", ContainerName: "main"}}},
+			"StatefulSet/team-a/database": {Containers: []ContainerRef{{PodName: "database-0", ContainerName: "main"}}},
+		},
+		logs: map[string][]LogEntry{
+			"frontend-a/main": {{Timestamp: "2026-03-14T10:00:00Z", PodName: "frontend-a", ContainerName: "main", Line: "2026-03-14T10:00:00Z first", Message: "first"}},
+			"database-0/main": {{Timestamp: "2026-03-14T10:00:01Z", PodName: "database-0", ContainerName: "main", Line: "2026-03-14T10:00:01Z second", Message: "second"}},
+		},
+	}
+
+	tempDir := t.TempDir()
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("Chdir returned error: %v", err)
+	}
+
+	app := App{
+		Cluster: cluster,
+		Stdin:   strings.NewReader(""),
+		Stdout:  &bytes.Buffer{},
+		Stderr:  &bytes.Buffer{},
+		Now:     func() time.Time { return time.Date(2026, 3, 14, 10, 20, 30, 0, time.UTC) },
+	}
+
+	if err := app.Run(context.Background(), Options{All: true, Since: time.Hour}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	for _, name := range []string{
+		"frontend--team-a-2026-03-14_10-20-30Z.log",
+		"database--team-a-2026-03-14_10-20-30Z.log",
+	} {
+		if _, err := os.Stat(filepath.Join(tempDir, name)); err != nil {
+			t.Fatalf("expected file %s: %v", name, err)
+		}
+	}
+}
+
+func TestAppRunPodModeUsesPods(t *testing.T) {
+	cluster := fakeCluster{
+		pods: []Workload{
+			{Namespace: "kube-system", Kind: "Pod", Name: "kube-apiserver-node-1", Ready: 1, Desired: 1},
+		},
+		targetsByTarget: map[string]WorkloadTargets{
+			"Pod/kube-system/kube-apiserver-node-1": {Containers: []ContainerRef{{PodName: "kube-apiserver-node-1", ContainerName: "kube-apiserver"}}},
+		},
+		logs: map[string][]LogEntry{
+			"kube-apiserver-node-1/kube-apiserver": {{Timestamp: "2026-03-14T10:00:00Z", PodName: "kube-apiserver-node-1", ContainerName: "kube-apiserver", Line: "2026-03-14T10:00:00Z first", Message: "first"}},
+		},
+	}
+
+	tempDir := t.TempDir()
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("Chdir returned error: %v", err)
+	}
+
+	app := App{
+		Cluster: cluster,
+		Stdin:   strings.NewReader(""),
+		Stdout:  &bytes.Buffer{},
+		Stderr:  &bytes.Buffer{},
+		Now:     func() time.Time { return time.Date(2026, 3, 14, 10, 20, 30, 0, time.UTC) },
+	}
+
+	if err := app.Run(context.Background(), Options{Pod: true, TermQuery: "apiserver", Since: time.Hour}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tempDir, "kube-apiserver-node-1--kube-system-2026-03-14_10-20-30Z.log")); err != nil {
+		t.Fatalf("expected pod output file: %v", err)
+	}
 }
 
 type fakeCluster struct {
-	workloads  []Workload
-	containers []ContainerRef
-	logs       map[string][]LogEntry
+	workloads       []Workload
+	pods            []Workload
+	standalonePods  []Workload
+	targets         WorkloadTargets
+	targetsByTarget map[string]WorkloadTargets
+	logs            map[string][]LogEntry
 }
 
 func (f fakeCluster) ListWorkloads(context.Context, string) ([]Workload, error) {
 	return f.workloads, nil
 }
 
-func (f fakeCluster) ListContainersForWorkload(context.Context, Workload) ([]ContainerRef, error) {
-	return f.containers, nil
+func (f fakeCluster) ListPods(context.Context, string) ([]Workload, error) {
+	return f.pods, nil
+}
+
+func (f fakeCluster) ListStandalonePods(context.Context, string) ([]Workload, error) {
+	return f.standalonePods, nil
+}
+
+func (f fakeCluster) ListContainersForWorkload(_ context.Context, workload Workload) (WorkloadTargets, error) {
+	if len(f.targetsByTarget) != 0 {
+		return f.targetsByTarget[targetKey(workload)], nil
+	}
+	return f.targets, nil
 }
 
 func (f fakeCluster) GetLogs(_ context.Context, _ string, podName, containerName string, _ time.Duration) ([]LogEntry, error) {
 	return f.logs[podName+"/"+containerName], nil
+}
+
+func targetKey(workload Workload) string {
+	return workload.Kind + "/" + workload.Namespace + "/" + workload.Name
 }

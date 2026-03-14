@@ -3,7 +3,6 @@ package getklogs
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -449,16 +448,16 @@ func readLogEntries(reader io.Reader, podName, containerName string) ([]LogEntry
 	var entries []LogEntry
 	for scanner.Scan() {
 		line := scanner.Text()
-		timestamp, err := splitTimestamp(line)
-		if err != nil {
-			return nil, fmt.Errorf("parse log line for pod %s container %s: %w", podName, containerName, err)
+		timestamp, message, ok := splitStructuredTimestamp(line)
+		if !ok {
+			return nil, fmt.Errorf("parse log line for pod %s container %s: missing RFC3339 timestamp", podName, containerName)
 		}
 		entries = append(entries, LogEntry{
 			Timestamp:     timestamp,
 			PodName:       podName,
 			ContainerName: containerName,
 			Line:          line,
-			Message:       strings.TrimPrefix(line, timestamp+" "),
+			Message:       message,
 		})
 	}
 	if err := scanner.Err(); err != nil {
@@ -468,12 +467,4 @@ func readLogEntries(reader io.Reader, podName, containerName string) ([]LogEntry
 		return nil, err
 	}
 	return entries, nil
-}
-
-func splitTimestamp(line string) (string, error) {
-	index := strings.IndexByte(line, ' ')
-	if index == -1 {
-		return "", errors.New("missing timestamp")
-	}
-	return line[:index], nil
 }

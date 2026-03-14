@@ -29,6 +29,7 @@ By default, getklogs writes the result to a timestamped file such as:
 
 Usage:
   getklogs [term] [flags]
+  getklogs [command]
 
 Examples:
   getklogs
@@ -36,6 +37,12 @@ Examples:
   getklogs --pod apiserver
   getklogs --all
   getklogs --stdout --tail 50 -n kube-system coredns
+  cat foo.log | getklogs tojson
+
+Available Commands:
+  completion  Generate the autocompletion script for the specified shell
+  help        Help about any command
+  tojson      Convert stdin log lines into structured output
 
 Flags:
       --add-source         Include pod and container source information in output
@@ -48,5 +55,7 @@ Flags:
       --since duration     Return logs newer than a relative duration like 5s, 2m, or 3h (default 3h0m0s)
       --stdout             Write output to stdout instead of creating files
       --tail int           Only include the last N combined log lines per target
+
+Use "getklogs [command] --help" for more information about a command.
 ```
 <!-- usage:end -->

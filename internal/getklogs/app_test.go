@@ -372,6 +372,36 @@ func TestReadLogEntriesKeepsOriginalLineAndTimestamp(t *testing.T) {
 	}
 }
 
+func TestConvertInputParsesTimestampedAndRawLines(t *testing.T) {
+	input := strings.NewReader("2026-03-14T10:00:00Z hello\nI0314 11:11:53.564201       1 client.go:214] \"Connect to server\" serverID=\"f154e1fe-358c-49c2-88cf-ec36ad33b39e\"\n")
+	var output bytes.Buffer
+
+	if err := ConvertInput(input, &output, Options{}); err != nil {
+		t.Fatalf("ConvertInput returned error: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d", len(lines))
+	}
+
+	var first map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatalf("json.Unmarshal first line returned error: %v", err)
+	}
+	if first["kubernetes_timestamp"] != "2026-03-14T10:00:00Z" || first["message"] != "hello" {
+		t.Fatalf("unexpected first payload: %#v", first)
+	}
+
+	var second map[string]any
+	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
+		t.Fatalf("json.Unmarshal second line returned error: %v", err)
+	}
+	if second["level"] != "I0314" || second["message"] != "Connect to server" {
+		t.Fatalf("unexpected second payload: %#v", second)
+	}
+}
+
 func TestRenderEntriesDefaultsToJSONWithoutSource(t *testing.T) {
 	lines, err := renderEntries([]LogEntry{{
 		Timestamp:     "2026-03-14T10:00:00Z",

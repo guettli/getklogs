@@ -32,7 +32,8 @@ By default, getklogs writes the result to a timestamped file such as:
   getklogs kubeadm-bootstrap
   getklogs --pod apiserver
   getklogs --all
-  getklogs --stdout --tail 50 -n kube-system coredns`,
+  getklogs --stdout --tail 50 -n kube-system coredns
+  cat foo.log | getklogs tojson`,
 		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -56,6 +57,7 @@ By default, getklogs writes the result to a timestamped file such as:
 			return app.Run(context.Background(), options)
 		},
 	}
+	cmd.AddCommand(newToJSONCmd(stdin, stdout))
 
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
@@ -69,6 +71,35 @@ By default, getklogs writes the result to a timestamped file such as:
 	cmd.Flags().BoolVar(&options.NoToJSON, "no-to-json", false, "Keep original log lines instead of converting output to JSON lines")
 	cmd.Flags().IntVar(&options.TailLines, "tail", 0, "Only include the last N combined log lines per target")
 	cmd.Flags().StringVarP(&options.Output, "output", "o", getklogs.OutputFormatJSON, "Output format: json or yaml")
+
+	return cmd
+}
+
+func newToJSONCmd(stdin io.Reader, stdout io.Writer) *cobra.Command {
+	options := getklogs.Options{
+		Output: getklogs.OutputFormatJSON,
+	}
+
+	cmd := &cobra.Command{
+		Use:     "tojson",
+		Aliases: []string{"to-json"},
+		Short:   "Convert stdin log lines into structured output",
+		Long: `Convert log lines from stdin into structured JSON lines without talking to Kubernetes.
+
+Lines that start with an RFC3339 timestamp keep that value as kubernetes_timestamp.
+All other lines are parsed as raw log messages.`,
+		Example: `  cat foo.log | getklogs tojson
+  kubectl logs deploy/coredns -n kube-system --timestamps | getklogs tojson
+  cat foo.log | getklogs tojson --output yaml`,
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return getklogs.ConvertInput(stdin, stdout, options)
+		},
+	}
+
+	cmd.Flags().StringVarP(&options.Output, "output", "o", options.Output, "Output format: json or yaml")
 
 	return cmd
 }

@@ -25,8 +25,6 @@ Here, "workload" means a Deployment, DaemonSet, or StatefulSet.
 If [term] is given, targets are matched case-insensitively via *term* across workload name, namespace, and kind.
 Use --pod to match pods by name instead.
 Use --all to process all matches.
-Without --pod, getklogs includes both workloads and standalone pods.
-Standalone pods are pods that do not belong to a Deployment, DaemonSet, or StatefulSet.
 
 By default, getklogs writes the result to a timestamped file such as:
   capi-kubeadm-bootstrap-controller-manager--mgt-system-2026-03-14_13-09-25Z.log`,

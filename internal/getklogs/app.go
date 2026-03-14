@@ -112,10 +112,7 @@ func (a App) Run(ctx context.Context, options Options) error {
 	if err != nil {
 		return err
 	}
-	outputFile := options.OutputFile
-	if outputFile == "" {
-		outputFile = buildOutputFilename(selected, a.now().UTC(), options.Output)
-	}
+	outputFile := buildOutputFilename(selected, a.now().UTC(), options.Output)
 
 	if _, err := fmt.Fprintf(a.Stderr, "Writing logs to %s\n", outputFile); err != nil {
 		return err

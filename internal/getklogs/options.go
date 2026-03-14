@@ -1,9 +1,6 @@
 package getklogs
 
-import (
-	"strings"
-	"time"
-)
+import "time"
 
 const DefaultSince = 3 * time.Hour
 
@@ -17,17 +14,12 @@ type Options struct {
 	Since     time.Duration
 	TermQuery string
 
-	OutputFile string
-	AddSource  bool
-	NoToJSON   bool
-	Output     string
+	AddSource bool
+	NoToJSON  bool
+	Output    string
 }
 
 func NormalizeOptions(options Options) Options {
-	if strings.HasSuffix(options.TermQuery, ".log") {
-		options.OutputFile = options.TermQuery
-		options.TermQuery = strings.TrimSuffix(options.TermQuery, ".log")
-	}
 	if options.Output == "" {
 		options.Output = OutputFormatJSON
 	}

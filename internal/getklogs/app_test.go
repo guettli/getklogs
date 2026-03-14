@@ -19,15 +19,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestNormalizeOptionsUsesLogSuffixAsOutputFile(t *testing.T) {
+func TestNormalizeOptionsSetsDefaultOutputFormat(t *testing.T) {
 	options := NormalizeOptions(Options{
 		Since:     15 * time.Minute,
-		TermQuery: "api.log",
+		TermQuery: "api",
 	})
 
-	if options.OutputFile != "api.log" {
-		t.Fatalf("expected output file api.log, got %q", options.OutputFile)
-	}
 	if options.TermQuery != "api" {
 		t.Fatalf("expected term query api, got %q", options.TermQuery)
 	}

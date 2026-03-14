@@ -35,7 +35,7 @@ tasks:
     deps: [_nix-check]
     cmds:
       - mkdir -p bin
-      - go build -o bin/getklogs ./cmd
+      - go build -o bin/getklogs .
 
   readme:
     desc: Update README usage block from Cobra help output

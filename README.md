@@ -7,7 +7,7 @@ Repository: <https://github.com/guettli/getklogs>
 ## Install
 
 ```console
-go install github.com/guettli/getklogs/cmd@latest
+go install github.com/guettli/getklogs@latest
 ```
 
 ## Usage
@@ -27,8 +27,11 @@ Examples:
   getklogs cert-manager.log
 
 Flags:
+      --add-source         Include pod and container source information in output
   -h, --help               help for getklogs
   -n, --namespace string   Kubernetes namespace (optional; if omitted: all namespaces)
+      --no-to-json         Keep original log lines instead of converting output to JSON lines
+  -o, --output string      Output format: json or yaml (default "json")
       --since duration     Return logs newer than a relative duration like 5s, 2m, or 3h (default 3h0m0s)
 ```
 <!-- usage:end -->

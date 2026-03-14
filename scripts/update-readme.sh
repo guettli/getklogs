@@ -12,7 +12,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-go run ./cmd --help >"$help_file"
+go run . --help >"$help_file"
 
 awk -v help_file="$help_file" '
 BEGIN {

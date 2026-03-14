@@ -12,7 +12,8 @@ import (
 
 func NewRootCmd(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	options := getklogs.Options{
-		Since: getklogs.DefaultSince,
+		Since:  getklogs.DefaultSince,
+		Output: getklogs.OutputFormatJSON,
 	}
 
 	cmd := &cobra.Command{
@@ -52,6 +53,9 @@ func NewRootCmd(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 
 	cmd.Flags().StringVarP(&options.Namespace, "namespace", "n", "", "Kubernetes namespace (optional; if omitted: all namespaces)")
 	cmd.Flags().DurationVar(&options.Since, "since", options.Since, "Return logs newer than a relative duration like 5s, 2m, or 3h")
+	cmd.Flags().BoolVar(&options.AddSource, "add-source", false, "Include pod and container source information in output")
+	cmd.Flags().BoolVar(&options.NoToJSON, "no-to-json", false, "Keep original log lines instead of converting output to JSON lines")
+	cmd.Flags().StringVarP(&options.Output, "output", "o", options.Output, "Output format: json or yaml")
 
 	return cmd
 }

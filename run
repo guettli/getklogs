@@ -7,7 +7,7 @@ set -Eeuo pipefail
 if [[ $# -eq 0 ]] || [[ "${1:-}" == -* ]]; then
     echo "Usage: run <command> [args...]" >&2
     echo "Example: run task check" >&2
-    echo "Example: run go run ./cmd --help" >&2
+    echo "Example: run go run . --help" >&2
     exit 1
 fi
 

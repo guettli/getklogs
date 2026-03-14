@@ -275,6 +275,7 @@ func readLogEntries(reader io.Reader, podName, containerName string) ([]LogEntry
 			PodName:       podName,
 			ContainerName: containerName,
 			Line:          line,
+			Message:       strings.TrimPrefix(line, timestamp+" "),
 		})
 	}
 	if err := scanner.Err(); err != nil {

@@ -3,3 +3,5 @@
 get-pods-logs.sh
 bin/
 result
+/*.log
+/*.yaml

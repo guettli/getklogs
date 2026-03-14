@@ -24,6 +24,12 @@ tasks:
     cmds:
       - golangci-lint run
 
+  deadcode:
+    desc: Run deadcode
+    deps: [_nix-check]
+    cmds:
+      - go run golang.org/x/tools/cmd/deadcode@latest -test ./...
+
   test:
     desc: Run Go tests
     deps: [_nix-check]
@@ -38,11 +44,11 @@ tasks:
       - go build -o bin/getklogs .
 
   readme:
-    desc: Update README usage block from Cobra help output
+    desc: Update README usage block
     deps: [_nix-check]
     cmds:
       - bash scripts/update-readme.sh
 
   check:
-    desc: Run format, lint, test, build, and README generation
-    deps: [fmt, lint, test, build, readme]
+    desc: Run format, lint, deadcode, test, build, and README generation
+    deps: [fmt, lint, deadcode, test, build, readme]

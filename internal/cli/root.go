@@ -79,7 +79,7 @@ By default, getklogs writes the result to a timestamped file such as:
 	cmd.Flags().BoolVar(&options.Pod, "pod", false, "Match pods by name instead of workloads")
 	cmd.Flags().BoolVar(&options.All, "all", false, "Process all matching targets; without --pod, also include standalone pods")
 	cmd.Flags().BoolVar(&options.Stdout, "stdout", false, "Write output to stdout instead of creating files")
-	cmd.Flags().StringVar(&options.OutDir, "outdir", "", "Directory for output files (default: current directory)")
+	cmd.Flags().StringVar(&options.OutDir, "outdir", "", "Output directory (default: current directory)")
 	cmd.Flags().BoolVar(&options.AddSource, "add-source", false, "Include pod and container source information in output")
 	cmd.Flags().IntVar(&options.TailLines, "tail", 0, "Only include the last N combined log lines per target")
 	cmd.Flags().StringVarP(&options.Output, "output", "o", getklogs.OutputFormatJSON, "Output format: json, yaml, or raw")
@@ -96,7 +96,7 @@ func newToJSONCmd(stdin io.Reader, stdout io.Writer) *cobra.Command {
 		Use:     "tojson",
 		Aliases: []string{"to-json"},
 		Short:   "Convert stdin log lines into json, yaml, or raw output",
-		Long: `Convert log lines from stdin into json, yaml, or raw output without talking to Kubernetes.
+		Long: `Convert stdin log lines into json, yaml, or raw output.
 
 Lines that start with an RFC3339 timestamp keep that value as kubernetes_timestamp.
 All other lines are parsed as raw log messages.`,

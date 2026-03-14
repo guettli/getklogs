@@ -55,7 +55,7 @@ Flags:
       --all                Process all matching targets; without --pod, also include standalone pods
   -h, --help               help for getklogs
   -n, --namespace string   Kubernetes namespace (optional; if omitted: all namespaces)
-      --outdir string      Directory for output files (default: current directory)
+      --outdir string      Output directory (default: current directory)
   -o, --output string      Output format: json, yaml, or raw (default "json")
       --pod                Match pods by name instead of workloads
       --since duration     Return logs newer than a relative duration like 5s, 2m, or 3h. Use 0s for all available logs (default 3h0m0s)

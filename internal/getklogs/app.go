@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -59,6 +60,10 @@ type ClusterAPI interface {
 	GetLogs(ctx context.Context, namespace, podName, containerName string, since time.Duration) ([]LogEntry, error)
 }
 
+type batchTargetResolver interface {
+	ResolveWorkloadTargets(ctx context.Context, workloads []Workload) (map[string]WorkloadTargets, error)
+}
+
 type App struct {
 	Cluster        ClusterAPI
 	Stdin          io.Reader
@@ -72,6 +77,9 @@ type WorkloadChooser func(stdin io.Reader, stdout io.Writer, workloads []Workloa
 
 func (a App) Run(ctx context.Context, options Options) error {
 	options = NormalizeOptions(options)
+	if err := ValidateOptions(options); err != nil {
+		return err
+	}
 
 	targets, err := a.listTargets(ctx, options)
 	if err != nil {
@@ -86,8 +94,13 @@ func (a App) Run(ctx context.Context, options Options) error {
 		return err
 	}
 
+	resolvedTargets, err := a.resolveWorkloadTargets(ctx, selectedTargets)
+	if err != nil {
+		return err
+	}
+
 	for index, selected := range selectedTargets {
-		if err := a.runForTarget(ctx, selected, options, index > 0); err != nil {
+		if err := a.runForTarget(ctx, selected, resolvedTargets[workloadKey(selected)], options, index > 0); err != nil {
 			return err
 		}
 	}
@@ -95,21 +108,19 @@ func (a App) Run(ctx context.Context, options Options) error {
 	return nil
 }
 
-func (a App) runForTarget(ctx context.Context, selected Workload, options Options, hasPreviousStdoutOutput bool) error {
-	targets, err := a.Cluster.ListContainersForWorkload(ctx, selected)
-	if err != nil {
-		return err
-	}
+func (a App) runForTarget(ctx context.Context, selected Workload, targets WorkloadTargets, options Options, hasPreviousStdoutOutput bool) error {
 	containers := targets.Containers
 	if len(containers) == 0 {
 		return fmt.Errorf("no pods found for %s/%s in namespace %q", selected.Kind, selected.Name, selected.Namespace)
 	}
 
-	podNames := uniquePodNames(containers)
 	if _, err := fmt.Fprintf(a.Stderr, "Running for namespace %q on %s/%s\n", selected.Namespace, selected.Kind, selected.Name); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(a.Stderr, "Pods: %s\n", strings.Join(podNames, " ")); err != nil {
+	if _, err := fmt.Fprintf(a.Stderr, "Log range: %s\n", DescribeSinceWindow(options.Since)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(a.Stderr, "Containers: %s\n", formatContainerRefs(containers)); err != nil {
 		return err
 	}
 	if targets.RolloutWarning != "" {
@@ -148,7 +159,11 @@ func (a App) runForTarget(ctx context.Context, selected Workload, options Option
 		return err
 	}
 
-	outputFile := buildOutputFilename(selected, a.now().UTC(), options.Output)
+	if err := os.MkdirAll(options.OutDir, 0o755); err != nil {
+		return fmt.Errorf("create output directory %q: %w", options.OutDir, err)
+	}
+
+	outputFile := buildOutputPath(selected, a.now().UTC(), options)
 
 	if _, err := fmt.Fprintf(a.Stderr, "Writing logs to %s\n", outputFile); err != nil {
 		return err
@@ -166,6 +181,23 @@ func (a App) runForTarget(ctx context.Context, selected Workload, options Option
 
 	_, err = fmt.Fprintln(a.Stderr)
 	return err
+}
+
+func (a App) resolveWorkloadTargets(ctx context.Context, workloads []Workload) (map[string]WorkloadTargets, error) {
+	if resolver, ok := a.Cluster.(batchTargetResolver); ok {
+		return resolver.ResolveWorkloadTargets(ctx, workloads)
+	}
+
+	resolved := make(map[string]WorkloadTargets, len(workloads))
+	for _, workload := range workloads {
+		targets, err := a.Cluster.ListContainersForWorkload(ctx, workload)
+		if err != nil {
+			return nil, err
+		}
+		resolved[workloadKey(workload)] = targets
+	}
+
+	return resolved, nil
 }
 
 func (a App) listTargets(ctx context.Context, options Options) ([]Workload, error) {
@@ -335,6 +367,10 @@ func buildOutputFilename(workload Workload, now time.Time, outputFormat string) 
 	return fmt.Sprintf("%s--%s-%s%s", workload.Name, workload.Namespace, now.UTC().Format("2006-01-02_15-04-05Z"), extension)
 }
 
+func buildOutputPath(workload Workload, now time.Time, options Options) string {
+	return filepath.Join(options.OutDir, buildOutputFilename(workload, now, options.Output))
+}
+
 func (a App) now() time.Time {
 	if a.Now != nil {
 		return a.Now()
@@ -344,19 +380,7 @@ func (a App) now() time.Time {
 }
 
 func matchWorkloadSearch(input string, workload Workload) bool {
-	needle := strings.ToLower(strings.TrimSpace(input))
-	if needle == "" {
-		return true
-	}
-
-	haystack := strings.ToLower(strings.Join([]string{
-		workload.Name,
-		workload.Namespace,
-		workload.Kind,
-		workload.ReadyText(),
-	}, " "))
-
-	return strings.Contains(haystack, needle)
+	return workloadMatchesSearch(input, workload)
 }
 
 func canUseInteractivePrompt(stdin io.Reader, stdout io.Writer) bool {
@@ -409,29 +433,49 @@ func isTerminal(stream any) bool {
 }
 
 func FilterWorkloads(workloads []Workload, term string) []Workload {
-	needle := strings.ToLower(term)
 	var matches []Workload
 	for _, workload := range workloads {
-		haystack := strings.ToLower(workload.Namespace + "\t" + workload.Kind + "\t" + workload.Name)
-		if strings.Contains(haystack, needle) {
+		if workloadMatchesSearch(term, workload) {
 			matches = append(matches, workload)
 		}
 	}
 	return matches
 }
 
-func uniquePodNames(containers []ContainerRef) []string {
-	set := make(map[string]struct{}, len(containers))
-	for _, container := range containers {
-		set[container.PodName] = struct{}{}
+func workloadMatchesSearch(term string, workload Workload) bool {
+	needle := normalizeSearchText(term)
+	if needle == "" {
+		return true
 	}
 
-	names := make([]string, 0, len(set))
-	for name := range set {
-		names = append(names, name)
+	return strings.Contains(searchableWorkloadText(workload), needle)
+}
+
+func searchableWorkloadText(workload Workload) string {
+	return normalizeSearchText(strings.Join([]string{
+		workload.Name,
+		workload.Namespace,
+		workload.Kind,
+		workload.ReadyText(),
+	}, " "))
+}
+
+func normalizeSearchText(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(value)), " ")
+}
+
+func workloadKey(workload Workload) string {
+	return workload.Kind + "/" + workload.Namespace + "/" + workload.Name
+}
+
+func formatContainerRefs(containers []ContainerRef) string {
+	parts := make([]string, 0, len(containers))
+	for _, container := range containers {
+		parts = append(parts, container.PodName+"/"+container.ContainerName)
 	}
-	slices.Sort(names)
-	return names
+	slices.Sort(parts)
+
+	return strings.Join(parts, " ")
 }
 
 func (a App) collectLogs(ctx context.Context, namespace string, containers []ContainerRef, since time.Duration) ([]LogEntry, error) {
@@ -498,6 +542,15 @@ func renderOutput(entries []LogEntry, options Options) ([]byte, error) {
 			return nil, nil
 		}
 		return []byte(strings.Join(lines, "\n") + "\n"), nil
+	case OutputFormatRaw:
+		lines, err := renderEntries(entries, options)
+		if err != nil {
+			return nil, err
+		}
+		if len(lines) == 0 {
+			return nil, nil
+		}
+		return []byte(strings.Join(lines, "\n") + "\n"), nil
 	case OutputFormatYAML:
 		return renderYAMLOutput(entries, options)
 	default:
@@ -518,7 +571,7 @@ func renderEntries(entries []LogEntry, options Options) ([]string, error) {
 }
 
 func renderEntry(entry LogEntry, options Options) (string, error) {
-	if options.NoToJSON {
+	if options.Output == OutputFormatRaw {
 		return renderPlainEntry(entry, options.AddSource), nil
 	}
 
@@ -543,19 +596,6 @@ func renderPlainEntry(entry LogEntry, addSource bool) string {
 func renderYAMLOutput(entries []LogEntry, options Options) ([]byte, error) {
 	items := make([]any, 0, len(entries))
 	for _, entry := range entries {
-		if options.NoToJSON {
-			if options.AddSource {
-				items = append(items, map[string]any{
-					"line":             entry.originalLine(),
-					"source_container": entry.ContainerName,
-					"source_pod":       entry.PodName,
-				})
-				continue
-			}
-			items = append(items, entry.originalLine())
-			continue
-		}
-
 		items = append(items, buildStructuredPayload(entry, options.AddSource))
 	}
 

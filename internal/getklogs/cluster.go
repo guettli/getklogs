@@ -1,7 +1,6 @@
 package getklogs
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -191,29 +190,86 @@ func (c *Cluster) listPods(ctx context.Context, namespace string) ([]corev1.Pod,
 }
 
 func (c *Cluster) ListContainersForWorkload(ctx context.Context, workload Workload) (WorkloadTargets, error) {
-	pods, err := c.client.CoreV1().Pods(workload.Namespace).List(ctx, metav1.ListOptions{})
+	pods, err := c.listPodsForNamespace(ctx, workload.Namespace)
 	if err != nil {
-		return WorkloadTargets{}, fmt.Errorf("list pods: %w", err)
+		return WorkloadTargets{}, err
 	}
 	if workload.Kind == "Pod" {
-		selectedPods := SelectPodsForWorkload(pods.Items, nil, workload)
-		if len(selectedPods) == 0 {
-			return WorkloadTargets{}, nil
-		}
-		return buildTargetsForPods(selectedPods, workload), nil
+		return targetsForWorkload(pods, nil, workload), nil
 	}
 
-	replicaSets, err := c.client.AppsV1().ReplicaSets(workload.Namespace).List(ctx, metav1.ListOptions{})
+	replicaSets, err := c.listReplicaSetsForNamespace(ctx, workload.Namespace)
 	if err != nil {
-		return WorkloadTargets{}, fmt.Errorf("list replicasets: %w", err)
+		return WorkloadTargets{}, err
 	}
 
-	selectedPods := SelectPodsForWorkload(pods.Items, replicaSets.Items, workload)
+	return targetsForWorkload(pods, replicaSets, workload), nil
+}
+
+func (c *Cluster) ResolveWorkloadTargets(ctx context.Context, workloads []Workload) (map[string]WorkloadTargets, error) {
+	grouped := make(map[string][]Workload)
+	for _, workload := range workloads {
+		grouped[workload.Namespace] = append(grouped[workload.Namespace], workload)
+	}
+
+	resolved := make(map[string]WorkloadTargets, len(workloads))
+	for namespace, namespaceWorkloads := range grouped {
+		pods, err := c.listPodsForNamespace(ctx, namespace)
+		if err != nil {
+			return nil, err
+		}
+
+		var replicaSets []appsv1.ReplicaSet
+		if namespaceHasManagedWorkload(namespaceWorkloads) {
+			replicaSets, err = c.listReplicaSetsForNamespace(ctx, namespace)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		for _, workload := range namespaceWorkloads {
+			resolved[workloadKey(workload)] = targetsForWorkload(pods, replicaSets, workload)
+		}
+	}
+
+	return resolved, nil
+}
+
+func namespaceHasManagedWorkload(workloads []Workload) bool {
+	for _, workload := range workloads {
+		if workload.Kind != "Pod" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (c *Cluster) listPodsForNamespace(ctx context.Context, namespace string) ([]corev1.Pod, error) {
+	pods, err := c.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list pods: %w", err)
+	}
+
+	return pods.Items, nil
+}
+
+func (c *Cluster) listReplicaSetsForNamespace(ctx context.Context, namespace string) ([]appsv1.ReplicaSet, error) {
+	replicaSets, err := c.client.AppsV1().ReplicaSets(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list replicasets: %w", err)
+	}
+
+	return replicaSets.Items, nil
+}
+
+func targetsForWorkload(pods []corev1.Pod, replicaSets []appsv1.ReplicaSet, workload Workload) WorkloadTargets {
+	selectedPods := SelectPodsForWorkload(pods, replicaSets, workload)
 	if len(selectedPods) == 0 {
-		return WorkloadTargets{}, nil
+		return WorkloadTargets{}
 	}
 
-	return buildTargetsForPods(selectedPods, workload), nil
+	return buildTargetsForPods(selectedPods, workload)
 }
 
 func buildTargetsForPods(selectedPods []corev1.Pod, workload Workload) WorkloadTargets {
@@ -414,12 +470,7 @@ func uniqueLabelValues(pods []corev1.Pod, key string) []string {
 }
 
 func (c *Cluster) GetLogs(ctx context.Context, namespace, podName, containerName string, since time.Duration) ([]LogEntry, error) {
-	sinceTime := metav1.NewTime(time.Now().Add(-since))
-	request := c.client.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
-		Container:  containerName,
-		Timestamps: true,
-		SinceTime:  &sinceTime,
-	})
+	request := c.client.CoreV1().Pods(namespace).GetLogs(podName, newPodLogOptions(containerName, since, time.Now()))
 
 	stream, err := request.Stream(ctx)
 	if err != nil {
@@ -435,6 +486,19 @@ func (c *Cluster) GetLogs(ctx context.Context, namespace, podName, containerName
 	return readLogEntries(stream, podName, containerName)
 }
 
+func newPodLogOptions(containerName string, since time.Duration, now time.Time) *corev1.PodLogOptions {
+	options := &corev1.PodLogOptions{
+		Container:  containerName,
+		Timestamps: true,
+	}
+	if since > 0 {
+		sinceTime := metav1.NewTime(now.Add(-since))
+		options.SinceTime = &sinceTime
+	}
+
+	return options
+}
+
 func ignoreLogError(err error) bool {
 	message := err.Error()
 	return strings.Contains(message, "previous terminated container") ||
@@ -444,7 +508,7 @@ func ignoreLogError(err error) bool {
 }
 
 func readLogEntries(reader io.Reader, podName, containerName string) ([]LogEntry, error) {
-	scanner := bufio.NewScanner(reader)
+	scanner := newLineScanner(reader)
 	var entries []LogEntry
 	for scanner.Scan() {
 		line := scanner.Text()

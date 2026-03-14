@@ -34,6 +34,41 @@ func TestNormalizeOptionsSetsDefaultOutputFormat(t *testing.T) {
 	if options.Output != OutputFormatJSON {
 		t.Fatalf("expected default output format json, got %q", options.Output)
 	}
+	if options.OutDir != "." {
+		t.Fatalf("expected default outdir '.', got %q", options.OutDir)
+	}
+}
+
+func TestValidateOptionsRejectsUnsupportedOutputFormat(t *testing.T) {
+	err := ValidateOptions(Options{Output: "xml"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if err.Error() != `unsupported output format "xml"` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateOptionsRejectsOutDirWithStdout(t *testing.T) {
+	err := ValidateOptions(Options{Stdout: true, OutDir: "logs"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if err.Error() != "--outdir cannot be used with --stdout" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDescribeSinceWindowFormatsRelativeDuration(t *testing.T) {
+	if got := DescribeSinceWindow(3 * time.Hour); got != "last 3h" {
+		t.Fatalf("expected last 3h, got %q", got)
+	}
+}
+
+func TestDescribeSinceWindowReturnsAllLogsWhenDisabled(t *testing.T) {
+	if got := DescribeSinceWindow(0); got != "all available logs" {
+		t.Fatalf("expected all available logs, got %q", got)
+	}
 }
 
 func TestNoTargetsFoundErrorMentionsStandalonePodsForAll(t *testing.T) {
@@ -52,7 +87,7 @@ func TestFilterWorkloadsMatchesNamespaceKindAndNameCaseInsensitive(t *testing.T)
 		{Namespace: "beta", Kind: "StatefulSet", Name: "database"},
 	}
 
-	matches := FilterWorkloads(workloads, "BETA\tstate")
+	matches := FilterWorkloads(workloads, "  BETA   state  ")
 
 	if len(matches) != 1 {
 		t.Fatalf("expected 1 match, got %d", len(matches))
@@ -121,6 +156,19 @@ func TestBuildOutputFilenameUsesYAMLExtension(t *testing.T) {
 	expected := "ccm--kube-system-2026-03-14_11-22-33Z.yaml"
 	if filename != expected {
 		t.Fatalf("expected %q, got %q", expected, filename)
+	}
+}
+
+func TestFormatContainerRefsUsesPodAndContainerNames(t *testing.T) {
+	formatted := formatContainerRefs([]ContainerRef{
+		{PodName: "frontend-a", ContainerName: "main"},
+		{PodName: "frontend-a", ContainerName: "sidecar"},
+		{PodName: "frontend-b", ContainerName: "main"},
+	})
+
+	expected := "frontend-a/main frontend-a/sidecar frontend-b/main"
+	if formatted != expected {
+		t.Fatalf("expected %q, got %q", expected, formatted)
 	}
 }
 
@@ -438,14 +486,14 @@ func TestRenderEntriesMergesJSONObjectAndAddsSourceOnDemand(t *testing.T) {
 	}
 }
 
-func TestRenderEntriesKeepsOriginalLinesWithoutSourceWhenNoToJSON(t *testing.T) {
+func TestRenderEntriesKeepsOriginalLinesForRawOutput(t *testing.T) {
 	lines, err := renderEntries([]LogEntry{{
 		Timestamp:     "2026-03-14T10:00:00Z",
 		PodName:       "frontend-a",
 		ContainerName: "main",
 		Line:          "2026-03-14T10:00:00Z hello",
 		Message:       "hello",
-	}}, Options{NoToJSON: true})
+	}}, Options{Output: OutputFormatRaw})
 	if err != nil {
 		t.Fatalf("renderEntries returned error: %v", err)
 	}
@@ -463,7 +511,7 @@ func TestRenderEntriesAddsSourceOnlyWhenRequested(t *testing.T) {
 		ContainerName: "main",
 		Line:          "2026-03-14T10:00:00Z hello",
 		Message:       "hello",
-	}}, Options{NoToJSON: true, AddSource: true})
+	}}, Options{Output: OutputFormatRaw, AddSource: true})
 	if err != nil {
 		t.Fatalf("renderEntries returned error: %v", err)
 	}
@@ -641,6 +689,23 @@ func TestRenderOutputSupportsYAML(t *testing.T) {
 	}
 }
 
+func TestRenderOutputSupportsRaw(t *testing.T) {
+	content, err := renderOutput([]LogEntry{{
+		Timestamp:     "2026-03-14T10:00:00Z",
+		PodName:       "frontend-a",
+		ContainerName: "main",
+		Line:          "2026-03-14T10:00:00Z hello",
+		Message:       "hello",
+	}}, Options{Output: OutputFormatRaw})
+	if err != nil {
+		t.Fatalf("renderOutput returned error: %v", err)
+	}
+
+	if string(content) != "2026-03-14T10:00:00Z hello\n" {
+		t.Fatalf("unexpected raw output: %q", string(content))
+	}
+}
+
 func TestSamplePodLogsRenderToJSON(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("..", "..", "pod-*.log"))
 	if err != nil {
@@ -721,18 +786,6 @@ func TestAppRunWritesJSONLinesByDefault(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	tempDir := t.TempDir()
-	oldWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd returned error: %v", err)
-	}
-	t.Cleanup(func() {
-		if chdirErr := os.Chdir(oldWd); chdirErr != nil {
-			t.Fatalf("failed to restore working directory: %v", chdirErr)
-		}
-	})
-	if err := os.Chdir(tempDir); err != nil {
-		t.Fatalf("Chdir returned error: %v", err)
-	}
 
 	app := App{
 		Cluster: cluster,
@@ -744,7 +797,7 @@ func TestAppRunWritesJSONLinesByDefault(t *testing.T) {
 		},
 	}
 
-	err = app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour})
+	err := app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, OutDir: tempDir})
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
@@ -767,10 +820,13 @@ func TestAppRunWritesJSONLinesByDefault(t *testing.T) {
 		t.Fatalf("unexpected file output:\n%s", string(content))
 	}
 
-	if !strings.Contains(stderr.String(), "Pods: frontend-a frontend-b\n") {
-		t.Fatalf("expected stderr to contain compact pod list, got %q", stderr.String())
+	if !strings.Contains(stderr.String(), "Containers: frontend-a/main frontend-b/sidecar\n") {
+		t.Fatalf("expected stderr to contain container list, got %q", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "Writing logs to frontend--team-a-2026-03-14_10-20-30Z.log") {
+	if !strings.Contains(stderr.String(), "Log range: last 1h\n") {
+		t.Fatalf("expected stderr to mention log range, got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Writing logs to "+filename) {
 		t.Fatalf("expected stderr to mention output file, got %q", stderr.String())
 	}
 	if !strings.HasSuffix(stderr.String(), "\n\n") {
@@ -801,18 +857,6 @@ func TestAppRunWritesYAMLWhenRequested(t *testing.T) {
 
 	var stderr bytes.Buffer
 	tempDir := t.TempDir()
-	oldWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd returned error: %v", err)
-	}
-	t.Cleanup(func() {
-		if chdirErr := os.Chdir(oldWd); chdirErr != nil {
-			t.Fatalf("failed to restore working directory: %v", chdirErr)
-		}
-	})
-	if err := os.Chdir(tempDir); err != nil {
-		t.Fatalf("Chdir returned error: %v", err)
-	}
 
 	app := App{
 		Cluster: cluster,
@@ -824,7 +868,7 @@ func TestAppRunWritesYAMLWhenRequested(t *testing.T) {
 		},
 	}
 
-	err = app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, Output: OutputFormatYAML})
+	err := app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, Output: OutputFormatYAML, OutDir: tempDir})
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
@@ -843,8 +887,11 @@ func TestAppRunWritesYAMLWhenRequested(t *testing.T) {
 		t.Fatalf("unexpected yaml payload: %#v", payload)
 	}
 
-	if !strings.Contains(stderr.String(), "Writing logs to frontend--team-a-2026-03-14_10-20-30Z.yaml") {
+	if !strings.Contains(stderr.String(), "Writing logs to "+filename) {
 		t.Fatalf("expected stderr to mention yaml output file, got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Log range: last 1h\n") {
+		t.Fatalf("expected stderr to mention log range, got %q", stderr.String())
 	}
 }
 
@@ -871,18 +918,6 @@ func TestAppRunAddsSourceWhenRequested(t *testing.T) {
 
 	var stderr bytes.Buffer
 	tempDir := t.TempDir()
-	oldWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd returned error: %v", err)
-	}
-	t.Cleanup(func() {
-		if chdirErr := os.Chdir(oldWd); chdirErr != nil {
-			t.Fatalf("failed to restore working directory: %v", chdirErr)
-		}
-	})
-	if err := os.Chdir(tempDir); err != nil {
-		t.Fatalf("Chdir returned error: %v", err)
-	}
 
 	app := App{
 		Cluster: cluster,
@@ -894,7 +929,7 @@ func TestAppRunAddsSourceWhenRequested(t *testing.T) {
 		},
 	}
 
-	err = app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, AddSource: true})
+	err := app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, AddSource: true, OutDir: tempDir})
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
@@ -947,8 +982,8 @@ func TestAppRunWritesToStdoutWhenRequested(t *testing.T) {
 	if strings.Contains(stderr.String(), "Writing logs to") {
 		t.Fatalf("did not expect file output message, got %q", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "Pods: frontend-a\n") {
-		t.Fatalf("expected stderr to contain compact pod list, got %q", stderr.String())
+	if !strings.Contains(stderr.String(), "Containers: frontend-a/main\n") {
+		t.Fatalf("expected stderr to contain container list, got %q", stderr.String())
 	}
 	if !strings.HasSuffix(stderr.String(), "\n\n") {
 		t.Fatalf("expected stderr to end with a blank line, got %q", stderr.String())
@@ -973,7 +1008,7 @@ func TestAppRunTailsCombinedEntries(t *testing.T) {
 	var stdout bytes.Buffer
 	app := App{Cluster: cluster, Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &bytes.Buffer{}}
 
-	if err := app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, Stdout: true, TailLines: 1, NoToJSON: true}); err != nil {
+	if err := app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, Stdout: true, TailLines: 1, Output: OutputFormatRaw}); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	if strings.TrimSpace(stdout.String()) != "2026-03-14T10:00:01Z second" {
@@ -998,14 +1033,6 @@ func TestAppRunAllWritesSeparateFiles(t *testing.T) {
 	}
 
 	tempDir := t.TempDir()
-	oldWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd returned error: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(tempDir); err != nil {
-		t.Fatalf("Chdir returned error: %v", err)
-	}
 
 	app := App{
 		Cluster: cluster,
@@ -1015,7 +1042,7 @@ func TestAppRunAllWritesSeparateFiles(t *testing.T) {
 		Now:     func() time.Time { return time.Date(2026, 3, 14, 10, 20, 30, 0, time.UTC) },
 	}
 
-	if err := app.Run(context.Background(), Options{All: true, Since: time.Hour}); err != nil {
+	if err := app.Run(context.Background(), Options{All: true, Since: time.Hour, OutDir: tempDir}); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
@@ -1043,13 +1070,41 @@ func TestAppRunPodModeUsesPods(t *testing.T) {
 	}
 
 	tempDir := t.TempDir()
-	oldWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd returned error: %v", err)
+
+	app := App{
+		Cluster: cluster,
+		Stdin:   strings.NewReader(""),
+		Stdout:  &bytes.Buffer{},
+		Stderr:  &bytes.Buffer{},
+		Now:     func() time.Time { return time.Date(2026, 3, 14, 10, 20, 30, 0, time.UTC) },
 	}
-	t.Cleanup(func() { _ = os.Chdir(oldWd) })
-	if err := os.Chdir(tempDir); err != nil {
-		t.Fatalf("Chdir returned error: %v", err)
+
+	if err := app.Run(context.Background(), Options{Pod: true, TermQuery: "apiserver", Since: time.Hour, OutDir: tempDir}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tempDir, "kube-apiserver-node-1--kube-system-2026-03-14_10-20-30Z.log")); err != nil {
+		t.Fatalf("expected pod output file: %v", err)
+	}
+}
+
+func TestAppRunUsesBatchTargetResolverWhenAvailable(t *testing.T) {
+	tempDir := t.TempDir()
+	cluster := &trackingCluster{
+		fakeCluster: fakeCluster{
+			workloads: []Workload{
+				{Namespace: "team-a", Kind: "Deployment", Name: "frontend"},
+				{Namespace: "team-a", Kind: "StatefulSet", Name: "database"},
+			},
+			targetsByTarget: map[string]WorkloadTargets{
+				"Deployment/team-a/frontend":  {Containers: []ContainerRef{{PodName: "frontend-a", ContainerName: "main"}}},
+				"StatefulSet/team-a/database": {Containers: []ContainerRef{{PodName: "database-0", ContainerName: "main"}}},
+			},
+			logs: map[string][]LogEntry{
+				"frontend-a/main": {{Timestamp: "2026-03-14T10:00:00Z", PodName: "frontend-a", ContainerName: "main", Line: "2026-03-14T10:00:00Z first", Message: "first"}},
+				"database-0/main": {{Timestamp: "2026-03-14T10:00:01Z", PodName: "database-0", ContainerName: "main", Line: "2026-03-14T10:00:01Z second", Message: "second"}},
+			},
+		},
 	}
 
 	app := App{
@@ -1060,12 +1115,14 @@ func TestAppRunPodModeUsesPods(t *testing.T) {
 		Now:     func() time.Time { return time.Date(2026, 3, 14, 10, 20, 30, 0, time.UTC) },
 	}
 
-	if err := app.Run(context.Background(), Options{Pod: true, TermQuery: "apiserver", Since: time.Hour}); err != nil {
+	if err := app.Run(context.Background(), Options{All: true, Since: time.Hour, OutDir: tempDir}); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-
-	if _, err := os.Stat(filepath.Join(tempDir, "kube-apiserver-node-1--kube-system-2026-03-14_10-20-30Z.log")); err != nil {
-		t.Fatalf("expected pod output file: %v", err)
+	if cluster.resolveCalls != 1 {
+		t.Fatalf("expected ResolveWorkloadTargets to be called once, got %d", cluster.resolveCalls)
+	}
+	if cluster.listContainerCalls != 0 {
+		t.Fatalf("expected ListContainersForWorkload to be bypassed, got %d calls", cluster.listContainerCalls)
 	}
 }
 
@@ -1097,10 +1154,35 @@ func (f fakeCluster) ListContainersForWorkload(_ context.Context, workload Workl
 	return f.targets, nil
 }
 
+func (f fakeCluster) ResolveWorkloadTargets(_ context.Context, workloads []Workload) (map[string]WorkloadTargets, error) {
+	resolved := make(map[string]WorkloadTargets, len(workloads))
+	for _, workload := range workloads {
+		targets, _ := f.ListContainersForWorkload(context.Background(), workload)
+		resolved[targetKey(workload)] = targets
+	}
+	return resolved, nil
+}
+
 func (f fakeCluster) GetLogs(_ context.Context, _ string, podName, containerName string, _ time.Duration) ([]LogEntry, error) {
 	return f.logs[podName+"/"+containerName], nil
 }
 
 func targetKey(workload Workload) string {
-	return workload.Kind + "/" + workload.Namespace + "/" + workload.Name
+	return workloadKey(workload)
+}
+
+type trackingCluster struct {
+	fakeCluster
+	resolveCalls       int
+	listContainerCalls int
+}
+
+func (c *trackingCluster) ResolveWorkloadTargets(ctx context.Context, workloads []Workload) (map[string]WorkloadTargets, error) {
+	c.resolveCalls++
+	return c.fakeCluster.ResolveWorkloadTargets(ctx, workloads)
+}
+
+func (c *trackingCluster) ListContainersForWorkload(ctx context.Context, workload Workload) (WorkloadTargets, error) {
+	c.listContainerCalls++
+	return c.fakeCluster.ListContainersForWorkload(ctx, workload)
 }

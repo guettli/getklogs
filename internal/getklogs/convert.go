@@ -1,7 +1,6 @@
 package getklogs
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"strings"
@@ -29,7 +28,7 @@ func ConvertInput(reader io.Reader, writer io.Writer, options Options) error {
 }
 
 func readInputEntries(reader io.Reader) ([]LogEntry, error) {
-	scanner := bufio.NewScanner(reader)
+	scanner := newLineScanner(reader)
 	var entries []LogEntry
 	for scanner.Scan() {
 		entries = append(entries, parseInputEntry(scanner.Text()))

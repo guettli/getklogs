@@ -23,6 +23,9 @@ Here, "workload" means a Deployment, DaemonSet, or StatefulSet.
 If [term] is given, targets are matched case-insensitively via *term* across workload name, namespace, and kind.
 Use --pod to match pods by name instead.
 Use --all to process all matches.
+By default, getklogs fetches logs from last 3h.
+Use --since 0s to fetch all available logs.
+Use --outdir to write files somewhere other than the current directory.
 
 By default, getklogs writes the result to a timestamped file such as:
   capi-kubeadm-bootstrap-controller-manager--mgt-system-2026-03-14_13-09-25Z.log
@@ -34,25 +37,28 @@ Usage:
 Examples:
   getklogs
   getklogs kubeadm-bootstrap
+  getklogs --since 0s kubeadm-bootstrap
+  getklogs -o raw --tail 50 -n kube-system coredns
   getklogs --pod apiserver
   getklogs --all
+  getklogs --outdir /tmp/getklogs --all
   getklogs --stdout --tail 50 -n kube-system coredns
   cat foo.log | getklogs tojson
 
 Available Commands:
   completion  Generate the autocompletion script for the specified shell
   help        Help about any command
-  tojson      Convert stdin log lines into structured output
+  tojson      Convert stdin log lines into json, yaml, or raw output
 
 Flags:
       --add-source         Include pod and container source information in output
       --all                Process all matching targets; without --pod, also include standalone pods
   -h, --help               help for getklogs
   -n, --namespace string   Kubernetes namespace (optional; if omitted: all namespaces)
-      --no-to-json         Keep original log lines instead of converting output to JSON lines
-  -o, --output string      Output format: json or yaml (default "json")
+      --outdir string      Directory for output files (default: current directory)
+  -o, --output string      Output format: json, yaml, or raw (default "json")
       --pod                Match pods by name instead of workloads
-      --since duration     Return logs newer than a relative duration like 5s, 2m, or 3h (default 3h0m0s)
+      --since duration     Return logs newer than a relative duration like 5s, 2m, or 3h. Use 0s for all available logs (default 3h0m0s)
       --stdout             Write output to stdout instead of creating files
       --tail int           Only include the last N combined log lines per target
 

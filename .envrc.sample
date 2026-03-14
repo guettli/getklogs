@@ -1,0 +1,4 @@
+# shellcheck shell=bash
+use flake
+
+export KUBECONFIG=$HOME/syself/cluster-stacks-testing.kubeconfig

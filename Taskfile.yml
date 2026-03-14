@@ -1,0 +1,48 @@
+version: "3"
+
+tasks:
+  default:
+    desc: Run all checks
+    deps: [check]
+
+  _nix-check:
+    internal: true
+    run: once
+    preconditions:
+      - sh: test "${DIRENV_DIR#-}" = "{{.TASKFILE_DIR}}"
+        msg: "Not in nix dev shell. Run via: ./run task"
+
+  fmt:
+    desc: Format Go code
+    deps: [_nix-check]
+    cmds:
+      - golangci-lint fmt
+
+  lint:
+    desc: Run golangci-lint
+    deps: [_nix-check]
+    cmds:
+      - golangci-lint run
+
+  test:
+    desc: Run Go tests
+    deps: [_nix-check]
+    cmds:
+      - go test ./...
+
+  build:
+    desc: Build the binary
+    deps: [_nix-check]
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/getklogs ./cmd/getklogs
+
+  readme:
+    desc: Update README usage block from Cobra help output
+    deps: [_nix-check]
+    cmds:
+      - bash scripts/update-readme.sh
+
+  check:
+    desc: Run format, lint, test, build, and README generation
+    deps: [fmt, lint, test, build, readme]

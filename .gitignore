@@ -1,0 +1,5 @@
+.envrc
+.direnv/
+get-pods-logs.sh
+bin/
+result

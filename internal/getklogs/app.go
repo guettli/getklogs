@@ -42,15 +42,15 @@ type LogEntry struct {
 }
 
 type ClusterAPI interface {
-	ListWorkloads(ctx context.Context, namespace string) ([]Workload, error)
-	ListPods(ctx context.Context, namespace string) ([]Workload, error)
-	ListStandalonePods(ctx context.Context, namespace string) ([]Workload, error)
-	ListContainersForWorkload(ctx context.Context, workload Workload) (WorkloadTargets, error)
+	ListWorkloads(ctx context.Context, namespace, node string) ([]Workload, error)
+	ListPods(ctx context.Context, namespace, node string) ([]Workload, error)
+	ListStandalonePods(ctx context.Context, namespace, node string) ([]Workload, error)
+	ListContainersForWorkload(ctx context.Context, workload Workload, node string) (WorkloadTargets, error)
 	GetLogs(ctx context.Context, namespace, podName, containerName string, since time.Duration) ([]LogEntry, error)
 }
 
 type batchTargetResolver interface {
-	ResolveWorkloadTargets(ctx context.Context, workloads []Workload) (map[string]WorkloadTargets, error)
+	ResolveWorkloadTargets(ctx context.Context, workloads []Workload, node string) (map[string]WorkloadTargets, error)
 }
 
 type App struct {
@@ -83,7 +83,7 @@ func (a App) Run(ctx context.Context, options Options) error {
 		return err
 	}
 
-	resolvedTargets, err := a.resolveWorkloadTargets(ctx, selectedTargets)
+	resolvedTargets, err := a.resolveWorkloadTargets(ctx, selectedTargets, options)
 	if err != nil {
 		return err
 	}
@@ -101,14 +101,14 @@ func (a App) Run(ctx context.Context, options Options) error {
 	return nil
 }
 
-func (a App) resolveWorkloadTargets(ctx context.Context, workloads []Workload) (map[string]WorkloadTargets, error) {
+func (a App) resolveWorkloadTargets(ctx context.Context, workloads []Workload, options Options) (map[string]WorkloadTargets, error) {
 	if resolver, ok := a.Cluster.(batchTargetResolver); ok {
-		return resolver.ResolveWorkloadTargets(ctx, workloads)
+		return resolver.ResolveWorkloadTargets(ctx, workloads, options.Node)
 	}
 
 	resolved := make(map[string]WorkloadTargets, len(workloads))
 	for _, workload := range workloads {
-		targets, err := a.Cluster.ListContainersForWorkload(ctx, workload)
+		targets, err := a.Cluster.ListContainersForWorkload(ctx, workload, options.Node)
 		if err != nil {
 			return nil, err
 		}

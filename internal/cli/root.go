@@ -9,8 +9,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var newCluster = func() (getklogs.ClusterAPI, error) {
-	return getklogs.NewCluster()
+var newCluster = func(kubeconfig string) (getklogs.ClusterAPI, error) {
+	return getklogs.NewCluster(kubeconfig)
 }
 
 func NewRootCmd(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
@@ -25,20 +25,25 @@ func NewRootCmd(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 
 Here, "workload" means a Deployment, DaemonSet, or StatefulSet.
 
-If [term] is given, targets are matched case-insensitively via *term* across workload name, namespace, and kind.
-Use --pod to match pods by name instead.
-Use --all to process all matches.
+If [term] is given, targets are matched case-insensitively via *term* across workload name,
+namespace, and kind. If term does not match exactly one workload, an interactive selection
+appears so you can choose a workload.
+
 By default, getklogs fetches logs from %s.
-Use --since 0s to fetch all available logs.
-Use --outdir to write files somewhere other than the current directory.
+
+Use --kubeconfig to set an explicit kubeconfig path.
+By default, getklogs uses the KUBECONFIG environment variable when it is set.
+
+Use --node to only include pods scheduled on nodes matching the given glob, for example *node*.
 
 By default, getklogs writes the result to a timestamped file such as:
-  capi-kubeadm-bootstrap-controller-manager--mgt-system-2026-03-14_13-09-25Z.log`, getklogs.DescribeSinceWindow(getklogs.DefaultSince)),
+  deployment-name--namespace-YYYY-MM-DD_HH-MM-SSZ.log`, getklogs.DescribeSinceWindow(getklogs.DefaultSince)),
 		Example: `  getklogs
   getklogs kubeadm-bootstrap
   getklogs --since 0s kubeadm-bootstrap
   getklogs -o raw --tail 50 -n kube-system coredns
   getklogs --pod apiserver
+  getklogs --node '*worker*' --all
   getklogs --all
   getklogs --outdir /tmp/getklogs --all
   getklogs --stdout --tail 50 -n kube-system coredns
@@ -54,7 +59,7 @@ By default, getklogs writes the result to a timestamped file such as:
 				return err
 			}
 
-			cluster, err := newCluster()
+			cluster, err := newCluster(options.Kubeconfig)
 			if err != nil {
 				return err
 			}
@@ -80,6 +85,8 @@ By default, getklogs writes the result to a timestamped file such as:
 	cmd.Flags().BoolVar(&options.All, "all", false, "Process all matching targets; without --pod, also include standalone pods")
 	cmd.Flags().BoolVar(&options.Stdout, "stdout", false, "Write output to stdout instead of creating files")
 	cmd.Flags().StringVar(&options.OutDir, "outdir", "", "Output directory (default: current directory)")
+	cmd.Flags().StringVar(&options.Kubeconfig, "kubeconfig", "", "Path to kubeconfig file (default: use KUBECONFIG when set)")
+	cmd.Flags().StringVar(&options.Node, "node", "", "Only include pods on nodes matching this glob pattern, for example *node*")
 	cmd.Flags().BoolVar(&options.AddSource, "add-source", false, "Include pod and container source information in output")
 	cmd.Flags().IntVar(&options.TailLines, "tail", 0, "Only include the last N combined log lines per target")
 	cmd.Flags().StringVarP(&options.Output, "output", "o", getklogs.OutputFormatJSON, "Output format: json, yaml, or raw")

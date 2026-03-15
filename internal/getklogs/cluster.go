@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -23,12 +24,13 @@ type Cluster struct {
 	client kubernetes.Interface
 }
 
-func NewCluster() (*Cluster, error) {
+func NewCluster(kubeconfig string) (*Cluster, error) {
 	// client-go may emit throttling notices through klog; keep command output focused on getklogs itself.
 	klog.LogToStderr(false)
 	klog.SetOutput(io.Discard)
 
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	loadingRules.ExplicitPath = strings.TrimSpace(kubeconfig)
 	configOverrides := &clientcmd.ConfigOverrides{}
 	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
 
@@ -55,7 +57,7 @@ func configureRESTClient(config *rest.Config) *rest.Config {
 	return config
 }
 
-func (c *Cluster) ListWorkloads(ctx context.Context, namespace string) ([]Workload, error) {
+func (c *Cluster) ListWorkloads(ctx context.Context, namespace, node string) ([]Workload, error) {
 	scope := namespace
 	if scope == "" {
 		scope = metav1.NamespaceAll
@@ -126,6 +128,21 @@ func (c *Cluster) ListWorkloads(ctx context.Context, namespace string) ([]Worklo
 		})
 	}
 
+	if node != "" {
+		pods, err := c.listPods(ctx, namespace)
+		if err != nil {
+			return nil, err
+		}
+
+		filteredPods := filterPodsByNode(pods, node)
+		replicaSets, err := c.listReplicaSets(ctx, namespace)
+		if err != nil {
+			return nil, err
+		}
+
+		workloads = filterWorkloadsByPods(workloads, filteredPods, replicaSets)
+	}
+
 	slices.SortFunc(workloads, func(left, right Workload) int {
 		switch {
 		case left.Namespace < right.Namespace:
@@ -155,11 +172,12 @@ func replicasOrZero(replicas *int32) int32 {
 	return *replicas
 }
 
-func (c *Cluster) ListPods(ctx context.Context, namespace string) ([]Workload, error) {
+func (c *Cluster) ListPods(ctx context.Context, namespace, node string) ([]Workload, error) {
 	pods, err := c.listPods(ctx, namespace)
 	if err != nil {
 		return nil, err
 	}
+	pods = filterPodsByNode(pods, node)
 
 	items := make([]Workload, 0, len(pods))
 	for _, pod := range pods {
@@ -168,11 +186,12 @@ func (c *Cluster) ListPods(ctx context.Context, namespace string) ([]Workload, e
 	return items, nil
 }
 
-func (c *Cluster) ListStandalonePods(ctx context.Context, namespace string) ([]Workload, error) {
+func (c *Cluster) ListStandalonePods(ctx context.Context, namespace, node string) ([]Workload, error) {
 	pods, err := c.listPods(ctx, namespace)
 	if err != nil {
 		return nil, err
 	}
+	pods = filterPodsByNode(pods, node)
 
 	var items []Workload
 	for _, pod := range pods {
@@ -214,11 +233,12 @@ func (c *Cluster) listPods(ctx context.Context, namespace string) ([]corev1.Pod,
 	return items, nil
 }
 
-func (c *Cluster) ListContainersForWorkload(ctx context.Context, workload Workload) (WorkloadTargets, error) {
+func (c *Cluster) ListContainersForWorkload(ctx context.Context, workload Workload, node string) (WorkloadTargets, error) {
 	pods, err := c.listPodsForNamespace(ctx, workload.Namespace)
 	if err != nil {
 		return WorkloadTargets{}, err
 	}
+	pods = filterPodsByNode(pods, node)
 	if workload.Kind == "Pod" {
 		return targetsForWorkload(pods, nil, workload), nil
 	}
@@ -231,7 +251,7 @@ func (c *Cluster) ListContainersForWorkload(ctx context.Context, workload Worklo
 	return targetsForWorkload(pods, replicaSets, workload), nil
 }
 
-func (c *Cluster) ResolveWorkloadTargets(ctx context.Context, workloads []Workload) (map[string]WorkloadTargets, error) {
+func (c *Cluster) ResolveWorkloadTargets(ctx context.Context, workloads []Workload, node string) (map[string]WorkloadTargets, error) {
 	grouped := make(map[string][]Workload)
 	for _, workload := range workloads {
 		grouped[workload.Namespace] = append(grouped[workload.Namespace], workload)
@@ -243,6 +263,7 @@ func (c *Cluster) ResolveWorkloadTargets(ctx context.Context, workloads []Worklo
 		if err != nil {
 			return nil, err
 		}
+		pods = filterPodsByNode(pods, node)
 
 		var replicaSets []appsv1.ReplicaSet
 		if namespaceHasManagedWorkload(namespaceWorkloads) {
@@ -258,6 +279,36 @@ func (c *Cluster) ResolveWorkloadTargets(ctx context.Context, workloads []Worklo
 	}
 
 	return resolved, nil
+}
+
+func (c *Cluster) listReplicaSets(ctx context.Context, namespace string) ([]appsv1.ReplicaSet, error) {
+	scope := namespace
+	if scope == "" {
+		scope = metav1.NamespaceAll
+	}
+
+	replicaSets, err := c.client.AppsV1().ReplicaSets(scope).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list replicasets: %w", err)
+	}
+
+	items := slices.Clone(replicaSets.Items)
+	slices.SortFunc(items, func(left, right appsv1.ReplicaSet) int {
+		switch {
+		case left.Namespace < right.Namespace:
+			return -1
+		case left.Namespace > right.Namespace:
+			return 1
+		case left.Name < right.Name:
+			return -1
+		case left.Name > right.Name:
+			return 1
+		default:
+			return 0
+		}
+	})
+
+	return items, nil
 }
 
 func namespaceHasManagedWorkload(workloads []Workload) bool {
@@ -286,6 +337,18 @@ func (c *Cluster) listReplicaSetsForNamespace(ctx context.Context, namespace str
 	}
 
 	return replicaSets.Items, nil
+}
+
+func filterWorkloadsByPods(workloads []Workload, pods []corev1.Pod, replicaSets []appsv1.ReplicaSet) []Workload {
+	filtered := make([]Workload, 0, len(workloads))
+	for _, workload := range workloads {
+		if len(SelectPodsForWorkload(pods, replicaSets, workload)) == 0 {
+			continue
+		}
+		filtered = append(filtered, workload)
+	}
+
+	return filtered
 }
 
 func targetsForWorkload(pods []corev1.Pod, replicaSets []appsv1.ReplicaSet, workload Workload) WorkloadTargets {
@@ -329,6 +392,34 @@ func buildTargetsForPods(selectedPods []corev1.Pod, workload Workload) WorkloadT
 	}
 }
 
+func filterPodsByNode(pods []corev1.Pod, node string) []corev1.Pod {
+	if node == "" {
+		return pods
+	}
+
+	filtered := make([]corev1.Pod, 0, len(pods))
+	for _, pod := range pods {
+		if matchesNodePattern(pod.Spec.NodeName, node) {
+			filtered = append(filtered, pod)
+		}
+	}
+
+	return filtered
+}
+
+func matchesNodePattern(nodeName, pattern string) bool {
+	if pattern == "" {
+		return true
+	}
+
+	matched, err := path.Match(pattern, nodeName)
+	if err != nil {
+		return false
+	}
+
+	return matched
+}
+
 func SelectPodsForWorkload(pods []corev1.Pod, replicaSets []appsv1.ReplicaSet, workload Workload) []corev1.Pod {
 	if workload.Kind == "Pod" {
 		for _, pod := range pods {
@@ -343,12 +434,16 @@ func SelectPodsForWorkload(pods []corev1.Pod, replicaSets []appsv1.ReplicaSet, w
 	for _, replicaSet := range replicaSets {
 		owner, ok := firstControllerOwner(replicaSet.OwnerReferences)
 		if ok {
-			replicaSetOwners[replicaSet.Name] = owner
+			replicaSetOwners[replicaSet.Namespace+"/"+replicaSet.Name] = owner
 		}
 	}
 
 	var selected []corev1.Pod
 	for _, pod := range pods {
+		if pod.Namespace != workload.Namespace {
+			continue
+		}
+
 		owner, ok := firstControllerOwner(pod.OwnerReferences)
 		if !ok {
 			continue
@@ -356,7 +451,7 @@ func SelectPodsForWorkload(pods []corev1.Pod, replicaSets []appsv1.ReplicaSet, w
 
 		effectiveOwner := owner
 		if owner.Kind == "ReplicaSet" {
-			if replicaSetOwner, found := replicaSetOwners[owner.Name]; found {
+			if replicaSetOwner, found := replicaSetOwners[pod.Namespace+"/"+owner.Name]; found {
 				effectiveOwner = replicaSetOwner
 			}
 		}

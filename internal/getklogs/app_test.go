@@ -60,6 +60,16 @@ func TestValidateOptionsRejectsOutDirWithStdout(t *testing.T) {
 	}
 }
 
+func TestValidateOptionsRejectsInvalidNodePattern(t *testing.T) {
+	err := ValidateOptions(Options{Node: "["})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if err.Error() != `invalid --node pattern "[": syntax error in pattern` {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestDescribeSinceWindowFormatsRelativeDuration(t *testing.T) {
 	if got := DescribeSinceWindow(3 * time.Hour); got != "last 3h" {
 		t.Fatalf("expected last 3h, got %q", got)
@@ -315,12 +325,33 @@ func TestAppListTargetsIncludesStandalonePodsWhenAllIsSet(t *testing.T) {
 	}
 }
 
+func TestAppListTargetsPassesNodeFilterToCluster(t *testing.T) {
+	cluster := &nodeTrackingCluster{
+		workloads: []Workload{
+			{Namespace: "team-a", Kind: "Deployment", Name: "frontend"},
+		},
+	}
+	app := App{Cluster: cluster}
+
+	targets, err := app.listTargets(context.Background(), Options{Node: "*worker*"})
+	if err != nil {
+		t.Fatalf("listTargets returned error: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 target, got %d", len(targets))
+	}
+	if cluster.listWorkloadsNode != "*worker*" {
+		t.Fatalf("expected node filter to reach ListWorkloads, got %q", cluster.listWorkloadsNode)
+	}
+}
+
 func TestSelectPodsForWorkloadFollowsReplicaSetOwnerToDeployment(t *testing.T) {
 	controller := true
 	pods := []corev1.Pod{
 		{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "frontend-abc",
+				Name:      "frontend-abc",
+				Namespace: "default",
 				OwnerReferences: []metav1.OwnerReference{{
 					Kind:       "ReplicaSet",
 					Name:       "frontend-rs",
@@ -330,7 +361,8 @@ func TestSelectPodsForWorkloadFollowsReplicaSetOwnerToDeployment(t *testing.T) {
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "database-0",
+				Name:      "database-0",
+				Namespace: "default",
 				OwnerReferences: []metav1.OwnerReference{{
 					Kind:       "StatefulSet",
 					Name:       "database",
@@ -342,7 +374,8 @@ func TestSelectPodsForWorkloadFollowsReplicaSetOwnerToDeployment(t *testing.T) {
 	replicaSets := []appsv1.ReplicaSet{
 		{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "frontend-rs",
+				Name:      "frontend-rs",
+				Namespace: "default",
 				OwnerReferences: []metav1.OwnerReference{{
 					Kind:       "Deployment",
 					Name:       "frontend",
@@ -363,6 +396,27 @@ func TestSelectPodsForWorkloadFollowsReplicaSetOwnerToDeployment(t *testing.T) {
 	}
 	if selected[0].Name != "frontend-abc" {
 		t.Fatalf("expected frontend-abc, got %q", selected[0].Name)
+	}
+}
+
+func TestFilterPodsByNodeSupportsExactAndGlobMatch(t *testing.T) {
+	pods := []corev1.Pod{
+		{ObjectMeta: metav1.ObjectMeta{Name: "frontend-a"}, Spec: corev1.PodSpec{NodeName: "worker-a"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "frontend-b"}, Spec: corev1.PodSpec{NodeName: "worker-b"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "database-0"}, Spec: corev1.PodSpec{NodeName: "infra-1"}},
+	}
+
+	exact := filterPodsByNode(pods, "worker-a")
+	if len(exact) != 1 || exact[0].Name != "frontend-a" {
+		t.Fatalf("expected exact node match for frontend-a, got %+v", exact)
+	}
+
+	glob := filterPodsByNode(pods, "*worker*")
+	if len(glob) != 2 {
+		t.Fatalf("expected 2 glob matches, got %d", len(glob))
+	}
+	if glob[0].Name != "frontend-a" || glob[1].Name != "frontend-b" {
+		t.Fatalf("unexpected glob matches: %+v", glob)
 	}
 }
 
@@ -1143,6 +1197,30 @@ func TestAppRunUsesBatchTargetResolverWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestAppResolveWorkloadTargetsPassesNodeFilterToBatchResolver(t *testing.T) {
+	cluster := &nodeTrackingCluster{
+		resolvedTargets: map[string]WorkloadTargets{
+			"Deployment/team-a/frontend": {Containers: []ContainerRef{{PodName: "frontend-a", ContainerName: "main"}}},
+		},
+	}
+	app := App{Cluster: cluster}
+
+	resolved, err := app.resolveWorkloadTargets(context.Background(), []Workload{{
+		Namespace: "team-a",
+		Kind:      "Deployment",
+		Name:      "frontend",
+	}}, Options{Node: "*worker*"})
+	if err != nil {
+		t.Fatalf("resolveWorkloadTargets returned error: %v", err)
+	}
+	if len(resolved) != 1 {
+		t.Fatalf("expected 1 resolved target, got %d", len(resolved))
+	}
+	if cluster.resolveNode != "*worker*" {
+		t.Fatalf("expected node filter to reach ResolveWorkloadTargets, got %q", cluster.resolveNode)
+	}
+}
+
 func TestAppRunFailsWhenBatchResolverOmitsTarget(t *testing.T) {
 	app := App{
 		Cluster: missingTargetCluster{
@@ -1246,29 +1324,29 @@ type fakeCluster struct {
 	logs            map[string][]LogEntry
 }
 
-func (f fakeCluster) ListWorkloads(context.Context, string) ([]Workload, error) {
+func (f fakeCluster) ListWorkloads(context.Context, string, string) ([]Workload, error) {
 	return f.workloads, nil
 }
 
-func (f fakeCluster) ListPods(context.Context, string) ([]Workload, error) {
+func (f fakeCluster) ListPods(context.Context, string, string) ([]Workload, error) {
 	return f.pods, nil
 }
 
-func (f fakeCluster) ListStandalonePods(context.Context, string) ([]Workload, error) {
+func (f fakeCluster) ListStandalonePods(context.Context, string, string) ([]Workload, error) {
 	return f.standalonePods, nil
 }
 
-func (f fakeCluster) ListContainersForWorkload(_ context.Context, workload Workload) (WorkloadTargets, error) {
+func (f fakeCluster) ListContainersForWorkload(_ context.Context, workload Workload, _ string) (WorkloadTargets, error) {
 	if len(f.targetsByTarget) != 0 {
 		return f.targetsByTarget[targetKey(workload)], nil
 	}
 	return f.targets, nil
 }
 
-func (f fakeCluster) ResolveWorkloadTargets(_ context.Context, workloads []Workload) (map[string]WorkloadTargets, error) {
+func (f fakeCluster) ResolveWorkloadTargets(_ context.Context, workloads []Workload, node string) (map[string]WorkloadTargets, error) {
 	resolved := make(map[string]WorkloadTargets, len(workloads))
 	for _, workload := range workloads {
-		targets, _ := f.ListContainersForWorkload(context.Background(), workload)
+		targets, _ := f.ListContainersForWorkload(context.Background(), workload, node)
 		resolved[targetKey(workload)] = targets
 	}
 	return resolved, nil
@@ -1288,22 +1366,55 @@ type trackingCluster struct {
 	listContainerCalls int
 }
 
-func (c *trackingCluster) ResolveWorkloadTargets(ctx context.Context, workloads []Workload) (map[string]WorkloadTargets, error) {
+func (c *trackingCluster) ResolveWorkloadTargets(ctx context.Context, workloads []Workload, node string) (map[string]WorkloadTargets, error) {
 	c.resolveCalls++
-	return c.fakeCluster.ResolveWorkloadTargets(ctx, workloads)
+	return c.fakeCluster.ResolveWorkloadTargets(ctx, workloads, node)
 }
 
-func (c *trackingCluster) ListContainersForWorkload(ctx context.Context, workload Workload) (WorkloadTargets, error) {
+func (c *trackingCluster) ListContainersForWorkload(ctx context.Context, workload Workload, node string) (WorkloadTargets, error) {
 	c.listContainerCalls++
-	return c.fakeCluster.ListContainersForWorkload(ctx, workload)
+	return c.fakeCluster.ListContainersForWorkload(ctx, workload, node)
 }
 
 type missingTargetCluster struct {
 	fakeCluster
 }
 
-func (c missingTargetCluster) ResolveWorkloadTargets(context.Context, []Workload) (map[string]WorkloadTargets, error) {
+func (c missingTargetCluster) ResolveWorkloadTargets(context.Context, []Workload, string) (map[string]WorkloadTargets, error) {
 	return map[string]WorkloadTargets{}, nil
+}
+
+type nodeTrackingCluster struct {
+	workloads         []Workload
+	resolvedTargets   map[string]WorkloadTargets
+	listWorkloadsNode string
+	resolveNode       string
+}
+
+func (c *nodeTrackingCluster) ListWorkloads(_ context.Context, _ string, node string) ([]Workload, error) {
+	c.listWorkloadsNode = node
+	return c.workloads, nil
+}
+
+func (c *nodeTrackingCluster) ListPods(context.Context, string, string) ([]Workload, error) {
+	return nil, nil
+}
+
+func (c *nodeTrackingCluster) ListStandalonePods(context.Context, string, string) ([]Workload, error) {
+	return nil, nil
+}
+
+func (c *nodeTrackingCluster) ListContainersForWorkload(context.Context, Workload, string) (WorkloadTargets, error) {
+	return WorkloadTargets{}, nil
+}
+
+func (c *nodeTrackingCluster) ResolveWorkloadTargets(_ context.Context, _ []Workload, node string) (map[string]WorkloadTargets, error) {
+	c.resolveNode = node
+	return c.resolvedTargets, nil
+}
+
+func (c *nodeTrackingCluster) GetLogs(context.Context, string, string, string, time.Duration) ([]LogEntry, error) {
+	return nil, nil
 }
 
 type contextAwareCluster struct {

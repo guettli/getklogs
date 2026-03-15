@@ -165,11 +165,67 @@ func TestRootCommandRejectsStdoutWithOutDir(t *testing.T) {
 	}
 }
 
+func TestRootCommandPassesKubeconfigToClusterFactory(t *testing.T) {
+	original := newCluster
+	t.Cleanup(func() {
+		newCluster = original
+	})
+
+	var gotKubeconfig string
+	newCluster = func(kubeconfig string) (getklogs.ClusterAPI, error) {
+		gotKubeconfig = kubeconfig
+		return rootTestCluster{
+			workloads: []getklogs.Workload{{
+				Namespace: "team-a",
+				Kind:      "Deployment",
+				Name:      "frontend",
+			}},
+			targetsByTarget: map[string]getklogs.WorkloadTargets{
+				"Deployment/team-a/frontend": {Containers: []getklogs.ContainerRef{{PodName: "frontend-a", ContainerName: "main"}}},
+			},
+			logs: map[string][]getklogs.LogEntry{
+				"frontend-a/main": {{Timestamp: "2026-03-14T10:00:00Z", PodName: "frontend-a", ContainerName: "main", Line: "2026-03-14T10:00:00Z hello", Message: "hello"}},
+			},
+		}, nil
+	}
+
+	cmd := NewRootCmd(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	cmd.SetArgs([]string{"--kubeconfig", "/tmp/custom-kubeconfig", "--stdout", "frontend"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if gotKubeconfig != "/tmp/custom-kubeconfig" {
+		t.Fatalf("expected kubeconfig to be passed through, got %q", gotKubeconfig)
+	}
+}
+
+func TestRootCommandHelpMentionsKubeconfigDefault(t *testing.T) {
+	var stdout bytes.Buffer
+	cmd := NewRootCmd(strings.NewReader(""), &stdout, &bytes.Buffer{})
+	cmd.SetArgs([]string{"--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	helpText := stdout.String()
+	if !strings.Contains(helpText, "Use --kubeconfig to set an explicit kubeconfig path.") {
+		t.Fatalf("expected help text to mention explicit kubeconfig option, got %q", helpText)
+	}
+	if !strings.Contains(helpText, "KUBECONFIG environment variable") {
+		t.Fatalf("expected help text to mention KUBECONFIG, got %q", helpText)
+	}
+	if !strings.Contains(helpText, "Only include pods on nodes matching this glob pattern") {
+		t.Fatalf("expected help text to mention node filtering, got %q", helpText)
+	}
+}
+
 func useTestCluster(t *testing.T, cluster rootTestCluster) {
 	t.Helper()
 
 	original := newCluster
-	newCluster = func() (getklogs.ClusterAPI, error) {
+	newCluster = func(string) (getklogs.ClusterAPI, error) {
 		return cluster, nil
 	}
 	t.Cleanup(func() {
@@ -185,23 +241,23 @@ type rootTestCluster struct {
 	logs            map[string][]getklogs.LogEntry
 }
 
-func (c rootTestCluster) ListWorkloads(context.Context, string) ([]getklogs.Workload, error) {
+func (c rootTestCluster) ListWorkloads(context.Context, string, string) ([]getklogs.Workload, error) {
 	return c.workloads, nil
 }
 
-func (c rootTestCluster) ListPods(context.Context, string) ([]getklogs.Workload, error) {
+func (c rootTestCluster) ListPods(context.Context, string, string) ([]getklogs.Workload, error) {
 	return c.pods, nil
 }
 
-func (c rootTestCluster) ListStandalonePods(context.Context, string) ([]getklogs.Workload, error) {
+func (c rootTestCluster) ListStandalonePods(context.Context, string, string) ([]getklogs.Workload, error) {
 	return c.standalonePods, nil
 }
 
-func (c rootTestCluster) ListContainersForWorkload(_ context.Context, workload getklogs.Workload) (getklogs.WorkloadTargets, error) {
+func (c rootTestCluster) ListContainersForWorkload(_ context.Context, workload getklogs.Workload, _ string) (getklogs.WorkloadTargets, error) {
 	return c.targetsByTarget[rootTargetKey(workload)], nil
 }
 
-func (c rootTestCluster) ResolveWorkloadTargets(_ context.Context, workloads []getklogs.Workload) (map[string]getklogs.WorkloadTargets, error) {
+func (c rootTestCluster) ResolveWorkloadTargets(_ context.Context, workloads []getklogs.Workload, _ string) (map[string]getklogs.WorkloadTargets, error) {
 	resolved := make(map[string]getklogs.WorkloadTargets, len(workloads))
 	for _, workload := range workloads {
 		resolved[rootTargetKey(workload)] = c.targetsByTarget[rootTargetKey(workload)]

@@ -15,10 +15,10 @@ import (
 
 func (a App) listTargets(ctx context.Context, options Options) ([]Workload, error) {
 	if options.Pod {
-		return a.Cluster.ListPods(ctx, options.Namespace)
+		return a.Cluster.ListPods(ctx, options.Namespace, options.Node)
 	}
 
-	workloads, err := a.Cluster.ListWorkloads(ctx, options.Namespace)
+	workloads, err := a.Cluster.ListWorkloads(ctx, options.Namespace, options.Node)
 	if err != nil {
 		return nil, err
 	}
@@ -26,7 +26,7 @@ func (a App) listTargets(ctx context.Context, options Options) ([]Workload, erro
 		return workloads, nil
 	}
 
-	standalonePods, err := a.Cluster.ListStandalonePods(ctx, options.Namespace)
+	standalonePods, err := a.Cluster.ListStandalonePods(ctx, options.Namespace, options.Node)
 	if err != nil {
 		return nil, err
 	}
@@ -35,19 +35,24 @@ func (a App) listTargets(ctx context.Context, options Options) ([]Workload, erro
 }
 
 func noTargetsFoundError(options Options) error {
+	nodeQualifier := ""
+	if options.Node != "" {
+		nodeQualifier = fmt.Sprintf(" on nodes matching %q", options.Node)
+	}
+
 	switch {
 	case options.Pod && options.Namespace != "":
-		return fmt.Errorf("no pods found in namespace %q", options.Namespace)
+		return fmt.Errorf("no pods found in namespace %q%s", options.Namespace, nodeQualifier)
 	case options.Pod:
-		return errors.New("no pods found in any namespace")
+		return fmt.Errorf("no pods found in any namespace%s", nodeQualifier)
 	case options.All && options.Namespace != "":
-		return fmt.Errorf("no Deployment/DaemonSet/StatefulSet or standalone pod found in namespace %q", options.Namespace)
+		return fmt.Errorf("no Deployment/DaemonSet/StatefulSet or standalone pod found in namespace %q%s", options.Namespace, nodeQualifier)
 	case options.All:
-		return errors.New("no Deployment/DaemonSet/StatefulSet or standalone pod found in any namespace")
+		return fmt.Errorf("no Deployment/DaemonSet/StatefulSet or standalone pod found in any namespace%s", nodeQualifier)
 	case options.Namespace != "":
-		return fmt.Errorf("no Deployment/DaemonSet/StatefulSet found in namespace %q", options.Namespace)
+		return fmt.Errorf("no Deployment/DaemonSet/StatefulSet found in namespace %q%s", options.Namespace, nodeQualifier)
 	default:
-		return errors.New("no Deployment/DaemonSet/StatefulSet found in any namespace")
+		return fmt.Errorf("no Deployment/DaemonSet/StatefulSet found in any namespace%s", nodeQualifier)
 	}
 }
 

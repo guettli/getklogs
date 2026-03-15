@@ -3,6 +3,7 @@ package getklogs
 import (
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -17,10 +18,12 @@ const (
 )
 
 type Options struct {
-	Namespace string
-	Since     time.Duration
-	TermQuery string
-	OutDir    string
+	Namespace  string
+	Since      time.Duration
+	TermQuery  string
+	OutDir     string
+	Kubeconfig string
+	Node       string
 
 	Pod       bool
 	All       bool
@@ -40,6 +43,8 @@ func NormalizeOptions(options Options) Options {
 		options.OutDir = "."
 	}
 	options.OutDir = filepath.Clean(options.OutDir)
+	options.Kubeconfig = strings.TrimSpace(options.Kubeconfig)
+	options.Node = strings.TrimSpace(options.Node)
 	return options
 }
 
@@ -57,6 +62,11 @@ func ValidateOptions(options Options) error {
 	}
 	if options.Stdout && options.OutDir != "." {
 		return errors.New("--outdir cannot be used with --stdout")
+	}
+	if options.Node != "" {
+		if _, err := path.Match(options.Node, ""); err != nil {
+			return fmt.Errorf("invalid --node pattern %q: %w", options.Node, err)
+		}
 	}
 
 	return nil

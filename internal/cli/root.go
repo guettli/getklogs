@@ -35,15 +35,18 @@ Use --kubeconfig to set an explicit kubeconfig path.
 By default, getklogs uses the KUBECONFIG environment variable when it is set.
 
 Use --node to only include pods scheduled on nodes matching the given glob, for example *node*.
+Use --meta to include metadata such as source_pod and source_container in the output.
 
 By default, getklogs writes the result to a timestamped file such as:
-  deployment-name--namespace-YYYY-MM-DD_HH-MM-SSZ.log`, getklogs.DescribeSinceWindow(getklogs.DefaultSince)),
+  deployment-name--namespace-YYYY-MM-DD_HH-MM-SSZ.log
+`, getklogs.DescribeSinceWindow(getklogs.DefaultSince)),
 		Example: `  getklogs
   getklogs kubeadm-bootstrap
   getklogs --since 0s kubeadm-bootstrap
   getklogs -o raw --tail 50 -n kube-system coredns
   getklogs --pod apiserver
   getklogs --node '*worker*' --all
+  getklogs --meta frontend
   getklogs --all
   getklogs --outdir /tmp/getklogs --all
   getklogs --stdout --tail 50 -n kube-system coredns
@@ -82,12 +85,12 @@ By default, getklogs writes the result to a timestamped file such as:
 	cmd.Flags().StringVarP(&options.Namespace, "namespace", "n", "", "Kubernetes namespace (optional; if omitted: all namespaces)")
 	cmd.Flags().DurationVar(&options.Since, "since", options.Since, "Return logs newer than a relative duration like 5s, 2m, or 3h. Use 0s for all available logs")
 	cmd.Flags().BoolVar(&options.Pod, "pod", false, "Match pods by name instead of workloads")
-	cmd.Flags().BoolVar(&options.All, "all", false, "Process all matching targets; without --pod, also include standalone pods")
+	cmd.Flags().BoolVar(&options.All, "all", false, "Process all matching targets. No interactive workload selection.")
 	cmd.Flags().BoolVar(&options.Stdout, "stdout", false, "Write output to stdout instead of creating files")
 	cmd.Flags().StringVar(&options.OutDir, "outdir", "", "Output directory (default: current directory)")
 	cmd.Flags().StringVar(&options.Kubeconfig, "kubeconfig", "", "Path to kubeconfig file (default: use KUBECONFIG when set)")
 	cmd.Flags().StringVar(&options.Node, "node", "", "Only include pods on nodes matching this glob pattern, for example *node*")
-	cmd.Flags().BoolVar(&options.AddSource, "add-source", false, "Include pod and container source information in output")
+	cmd.Flags().BoolVar(&options.Meta, "meta", false, "Include metadata such as source_pod and source_container in the output")
 	cmd.Flags().IntVar(&options.TailLines, "tail", 0, "Only include the last N combined log lines per target")
 	cmd.Flags().StringVarP(&options.Output, "output", "o", getklogs.OutputFormatJSON, "Output format: json, yaml, or raw")
 

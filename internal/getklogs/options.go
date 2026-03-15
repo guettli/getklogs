@@ -28,7 +28,7 @@ type Options struct {
 	Pod       bool
 	All       bool
 	Stdout    bool
-	AddSource bool
+	Meta      bool
 	TailLines int
 	Output    string
 }

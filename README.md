@@ -36,6 +36,7 @@ Use --kubeconfig to set an explicit kubeconfig path.
 By default, getklogs uses the KUBECONFIG environment variable when it is set.
 
 Use --node to only include pods scheduled on nodes matching the given glob, for example *node*.
+Use --meta to include metadata such as source_pod and source_container in the output.
 
 By default, getklogs writes the result to a timestamped file such as:
   deployment-name--namespace-YYYY-MM-DD_HH-MM-SSZ.log
@@ -51,6 +52,7 @@ Examples:
   getklogs -o raw --tail 50 -n kube-system coredns
   getklogs --pod apiserver
   getklogs --node '*worker*' --all
+  getklogs --meta frontend
   getklogs --all
   getklogs --outdir /tmp/getklogs --all
   getklogs --stdout --tail 50 -n kube-system coredns
@@ -62,10 +64,10 @@ Available Commands:
   tojson      Convert stdin log lines into json, yaml, or raw output
 
 Flags:
-      --add-source          Include pod and container source information in output
-      --all                 Process all matching targets; without --pod, also include standalone pods
+      --all                 Process all matching targets. No interactive workload selection.
   -h, --help                help for getklogs
       --kubeconfig string   Path to kubeconfig file (default: use KUBECONFIG when set)
+      --meta                Include metadata such as source_pod and source_container in the output
   -n, --namespace string    Kubernetes namespace (optional; if omitted: all namespaces)
       --node string         Only include pods on nodes matching this glob pattern, for example *node*
       --outdir string       Output directory (default: current directory)

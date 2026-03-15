@@ -44,9 +44,13 @@ func (a App) runForTarget(ctx context.Context, selected Workload, targets Worklo
 	if err != nil {
 		return err
 	}
+	logCount := len(entries)
 
 	if options.Stdout {
 		if len(content) == 0 {
+			if _, err := fmt.Fprintln(a.Stderr, "No log lines found."); err != nil {
+				return err
+			}
 			_, err := fmt.Fprintln(a.Stderr)
 			return err
 		}
@@ -62,13 +66,21 @@ func (a App) runForTarget(ctx context.Context, selected Workload, targets Worklo
 		return err
 	}
 
+	if logCount == 0 {
+		if _, err := fmt.Fprintln(a.Stderr, "No log lines found."); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintln(a.Stderr)
+		return err
+	}
+
 	if err := os.MkdirAll(options.OutDir, 0o755); err != nil {
 		return fmt.Errorf("create output directory %q: %w", options.OutDir, err)
 	}
 
 	outputFile := buildOutputPath(selected, a.now().UTC(), options)
 
-	if _, err := fmt.Fprintf(a.Stderr, "Writing logs to %s\n", outputFile); err != nil {
+	if _, err := fmt.Fprintf(a.Stderr, "Writing %d logs to %s\n", logCount, outputFile); err != nil {
 		return err
 	}
 

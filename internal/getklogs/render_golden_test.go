@@ -14,17 +14,17 @@ func TestRenderOutputGoldenFiles(t *testing.T) {
 	}{
 		{
 			name:    "json",
-			options: Options{AddSource: true},
+			options: Options{Meta: true},
 			golden:  "render_json.golden",
 		},
 		{
 			name:    "yaml",
-			options: Options{Output: OutputFormatYAML, AddSource: true},
+			options: Options{Output: OutputFormatYAML, Meta: true},
 			golden:  "render_yaml.golden",
 		},
 		{
 			name:    "raw",
-			options: Options{Output: OutputFormatRaw, AddSource: true},
+			options: Options{Output: OutputFormatRaw, Meta: true},
 			golden:  "render_raw.golden",
 		},
 	}

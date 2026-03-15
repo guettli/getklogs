@@ -246,12 +246,22 @@ func FilterWorkloads(workloads []Workload, term string) []Workload {
 }
 
 func workloadMatchesSearch(term string, workload Workload) bool {
-	needle := normalizeSearchText(term)
-	if needle == "" {
+	needles := strings.Fields(normalizeSearchText(term))
+	if len(needles) == 0 {
 		return true
 	}
 
-	return strings.Contains(searchableWorkloadText(workload), needle)
+	haystack := searchableWorkloadText(workload)
+	start := 0
+	for _, needle := range needles {
+		index := strings.Index(haystack[start:], needle)
+		if index < 0 {
+			return false
+		}
+		start += index + len(needle)
+	}
+
+	return true
 }
 
 func searchableWorkloadText(workload Workload) string {

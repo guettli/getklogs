@@ -108,6 +108,22 @@ func TestFilterWorkloadsMatchesNamespaceKindAndNameCaseInsensitive(t *testing.T)
 	}
 }
 
+func TestFilterWorkloadsMatchesOrderedTermsWithWildcardGap(t *testing.T) {
+	workloads := []Workload{
+		{Namespace: "team-a", Kind: "Deployment", Name: "foo-service-bar"},
+		{Namespace: "team-a", Kind: "Deployment", Name: "bar-service-foo"},
+	}
+
+	matches := FilterWorkloads(workloads, "foo bar")
+
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(matches))
+	}
+	if matches[0].Name != "foo-service-bar" {
+		t.Fatalf("expected foo-service-bar, got %q", matches[0].Name)
+	}
+}
+
 func TestChooseWorkloadInteractivelyFallsBackToNumericPromptWithoutTTY(t *testing.T) {
 	workloads := []Workload{
 		{Namespace: "team-a", Kind: "Deployment", Name: "frontend", Ready: 2, Desired: 2},
@@ -516,7 +532,7 @@ func TestConvertInputParsesTimestampedAndRawLines(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
 		t.Fatalf("json.Unmarshal second line returned error: %v", err)
 	}
-	if second["level"] != "I0314" || second["message"] != "Connect to server" {
+	if second["level"] != "INFO" || second["message"] != "Connect to server" {
 		t.Fatalf("unexpected second payload: %#v", second)
 	}
 }
@@ -546,7 +562,7 @@ func TestRenderEntriesMergesJSONObjectAndAddsSourceOnDemand(t *testing.T) {
 		ContainerName: "main",
 		Line:          `2026-03-14T10:00:00Z {"level":"info","msg":"hello"}`,
 		Message:       `{"level":"info","msg":"hello"}`,
-	}}, Options{AddSource: true})
+	}}, Options{Meta: true})
 	if err != nil {
 		t.Fatalf("renderEntries returned error: %v", err)
 	}
@@ -582,7 +598,7 @@ func TestRenderEntriesAddsSourceOnlyWhenRequested(t *testing.T) {
 		ContainerName: "main",
 		Line:          "2026-03-14T10:00:00Z hello",
 		Message:       "hello",
-	}}, Options{Output: OutputFormatRaw, AddSource: true})
+	}}, Options{Output: OutputFormatRaw, Meta: true})
 	if err != nil {
 		t.Fatalf("renderEntries returned error: %v", err)
 	}
@@ -622,7 +638,7 @@ func TestRenderEntriesParsesKlogStyleMessages(t *testing.T) {
 	}
 
 	assertEqual("kubernetes_timestamp", "2026-03-14T10:36:31.700000Z")
-	assertEqual("level", "E0314")
+	assertEqual("level", "ERROR")
 	assertEqual("log_timestamp", "2026-03-14T10:36:31.625751Z")
 	assertEqual("thread_id", float64(1))
 	assertEqual("caller", "controller.go:347")
@@ -651,7 +667,7 @@ func TestRenderEntriesParsesRawKlogLinesWithoutOuterTimestamp(t *testing.T) {
 		t.Fatalf("json.Unmarshal returned error: %v", err)
 	}
 
-	if payload["level"] != "I0314" || payload["log_timestamp"] != "03-14T11:11:53.564201" || payload["message"] != "Connect to server" {
+	if payload["level"] != "INFO" || payload["log_timestamp"] != "03-14T11:11:53.564201" || payload["message"] != "Connect to server" {
 		t.Fatalf("unexpected payload: %#v", payload)
 	}
 }
@@ -670,7 +686,7 @@ func TestRenderEntriesParsesKlogLinesWithPlainTextMessage(t *testing.T) {
 		t.Fatalf("json.Unmarshal returned error: %v", err)
 	}
 
-	if payload["level"] != "W0314" || payload["caller"] != "reflector.go:362" {
+	if payload["level"] != "WARN" || payload["caller"] != "reflector.go:362" {
 		t.Fatalf("unexpected payload: %#v", payload)
 	}
 	if !strings.Contains(payload["message"].(string), "falling back to the standard LIST/WATCH semantics") {
@@ -897,11 +913,56 @@ func TestAppRunWritesJSONLinesByDefault(t *testing.T) {
 	if !strings.Contains(stderr.String(), "Log range: last 1h\n") {
 		t.Fatalf("expected stderr to mention log range, got %q", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "Writing logs to "+filename) {
+	if !strings.Contains(stderr.String(), "Writing 2 logs to "+filename) {
 		t.Fatalf("expected stderr to mention output file, got %q", stderr.String())
 	}
 	if !strings.HasSuffix(stderr.String(), "\n\n") {
 		t.Fatalf("expected stderr to end with a blank line, got %q", stderr.String())
+	}
+}
+
+func TestAppRunSkipsFileCreationWhenNoLogsAreCollected(t *testing.T) {
+	cluster := fakeCluster{
+		workloads: []Workload{{
+			Namespace: "team-a",
+			Kind:      "Deployment",
+			Name:      "frontend",
+		}},
+		targets: WorkloadTargets{Containers: []ContainerRef{
+			{PodName: "frontend-a", ContainerName: "main"},
+		}},
+		logs: map[string][]LogEntry{
+			"frontend-a/main": nil,
+		},
+	}
+
+	var stderr bytes.Buffer
+	tempDir := t.TempDir()
+
+	app := App{
+		Cluster: cluster,
+		Stdin:   strings.NewReader(""),
+		Stdout:  &bytes.Buffer{},
+		Stderr:  &stderr,
+		Now: func() time.Time {
+			return time.Date(2026, 3, 14, 10, 20, 30, 0, time.UTC)
+		},
+	}
+
+	if err := app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, OutDir: tempDir}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if matches, err := filepath.Glob(filepath.Join(tempDir, "frontend--team-a-*")); err != nil {
+		t.Fatalf("Glob returned error: %v", err)
+	} else if len(matches) != 0 {
+		t.Fatalf("expected no output files, got %v", matches)
+	}
+	if strings.Contains(stderr.String(), "Writing ") {
+		t.Fatalf("did not expect write message, got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "No log lines found.\n") {
+		t.Fatalf("expected explicit no-log message, got %q", stderr.String())
 	}
 }
 
@@ -958,7 +1019,7 @@ func TestAppRunWritesYAMLWhenRequested(t *testing.T) {
 		t.Fatalf("unexpected yaml payload: %#v", payload)
 	}
 
-	if !strings.Contains(stderr.String(), "Writing logs to "+filename) {
+	if !strings.Contains(stderr.String(), "Writing 1 logs to "+filename) {
 		t.Fatalf("expected stderr to mention yaml output file, got %q", stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "Log range: last 1h\n") {
@@ -966,7 +1027,7 @@ func TestAppRunWritesYAMLWhenRequested(t *testing.T) {
 	}
 }
 
-func TestAppRunAddsSourceWhenRequested(t *testing.T) {
+func TestAppRunAddsMetadataWhenRequested(t *testing.T) {
 	cluster := fakeCluster{
 		workloads: []Workload{{
 			Namespace: "team-a",
@@ -1000,7 +1061,7 @@ func TestAppRunAddsSourceWhenRequested(t *testing.T) {
 		},
 	}
 
-	err := app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, AddSource: true, OutDir: tempDir})
+	err := app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, Meta: true, OutDir: tempDir})
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
@@ -1050,7 +1111,7 @@ func TestAppRunWritesToStdoutWhenRequested(t *testing.T) {
 	if !strings.Contains(stdout.String(), `"message":"first"`) {
 		t.Fatalf("expected stdout output, got %q", stdout.String())
 	}
-	if strings.Contains(stderr.String(), "Writing logs to") {
+	if strings.Contains(stderr.String(), "Writing ") {
 		t.Fatalf("did not expect file output message, got %q", stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "Containers: frontend-a/main\n") {
@@ -1058,6 +1119,36 @@ func TestAppRunWritesToStdoutWhenRequested(t *testing.T) {
 	}
 	if !strings.HasSuffix(stderr.String(), "\n\n") {
 		t.Fatalf("expected stderr to end with a blank line, got %q", stderr.String())
+	}
+}
+
+func TestAppRunReportsWhenStdoutHasNoLogs(t *testing.T) {
+	cluster := fakeCluster{
+		workloads: []Workload{{
+			Namespace: "team-a",
+			Kind:      "Deployment",
+			Name:      "frontend",
+		}},
+		targetsByTarget: map[string]WorkloadTargets{
+			"Deployment/team-a/frontend": {Containers: []ContainerRef{{PodName: "frontend-a", ContainerName: "main"}}},
+		},
+		logs: map[string][]LogEntry{
+			"frontend-a/main": nil,
+		},
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{Cluster: cluster, Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr}
+
+	if err := app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, Stdout: true}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "No log lines found.\n") {
+		t.Fatalf("expected explicit no-log message, got %q", stderr.String())
 	}
 }
 

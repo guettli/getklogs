@@ -114,6 +114,9 @@ func TestRootCommandWritesFilesToOutDir(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Fatalf("expected empty stdout, got %q", stdout.String())
 	}
+	if !strings.Contains(stderr.String(), "Writing 1 logs to "+matches[0]) {
+		t.Fatalf("expected stderr to mention written log count, got %q", stderr.String())
+	}
 }
 
 func TestRootCommandWritesMultipleYAMLDocumentsToStdout(t *testing.T) {
@@ -147,8 +150,44 @@ func TestRootCommandWritesMultipleYAMLDocumentsToStdout(t *testing.T) {
 	if !strings.Contains(stdout.String(), "message: first") || !strings.Contains(stdout.String(), "message: second") {
 		t.Fatalf("unexpected yaml stdout: %q", stdout.String())
 	}
-	if strings.Contains(stderr.String(), "Writing logs to") {
+	if strings.Contains(stderr.String(), "Writing ") {
 		t.Fatalf("did not expect file output, got %q", stderr.String())
+	}
+}
+
+func TestRootCommandIncludesMetadataWithMetaFlag(t *testing.T) {
+	useTestCluster(t, rootTestCluster{
+		workloads: []getklogs.Workload{{
+			Namespace: "team-a",
+			Kind:      "Deployment",
+			Name:      "frontend",
+		}},
+		targetsByTarget: map[string]getklogs.WorkloadTargets{
+			"Deployment/team-a/frontend": {Containers: []getklogs.ContainerRef{{PodName: "frontend-a", ContainerName: "main"}}},
+		},
+		logs: map[string][]getklogs.LogEntry{
+			"frontend-a/main": {{
+				Timestamp:     "2026-03-14T10:00:00Z",
+				PodName:       "frontend-a",
+				ContainerName: "main",
+				Line:          "2026-03-14T10:00:00Z hello",
+				Message:       "hello",
+			}},
+		},
+	})
+
+	var stdout bytes.Buffer
+	cmd := NewRootCmd(strings.NewReader(""), &stdout, &bytes.Buffer{})
+	cmd.SetArgs([]string{"--meta", "--stdout", "frontend"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"source_container":"main"`) {
+		t.Fatalf("expected source_container in stdout, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"source_pod":"frontend-a"`) {
+		t.Fatalf("expected source_pod in stdout, got %q", stdout.String())
 	}
 }
 
@@ -218,6 +257,9 @@ func TestRootCommandHelpMentionsKubeconfigDefault(t *testing.T) {
 	}
 	if !strings.Contains(helpText, "Only include pods on nodes matching this glob pattern") {
 		t.Fatalf("expected help text to mention node filtering, got %q", helpText)
+	}
+	if !strings.Contains(helpText, "--meta") {
+		t.Fatalf("expected help text to mention metadata flag, got %q", helpText)
 	}
 }
 

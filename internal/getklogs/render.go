@@ -22,11 +22,11 @@ type structuredPayload struct {
 	Extra               map[string]any
 }
 
-func newStructuredPayload(entry LogEntry, addSource bool) structuredPayload {
+func newStructuredPayload(entry LogEntry, meta bool) structuredPayload {
 	payload := structuredPayload{
 		KubernetesTimestamp: entry.Timestamp,
 	}
-	if addSource {
+	if meta {
 		payload.SourceContainer = entry.ContainerName
 		payload.SourcePod = entry.PodName
 	}
@@ -124,10 +124,10 @@ func renderEntries(entries []LogEntry, options Options) ([]string, error) {
 
 func renderEntry(entry LogEntry, options Options) (string, error) {
 	if options.Output == OutputFormatRaw {
-		return renderPlainEntry(entry, options.AddSource), nil
+		return renderPlainEntry(entry, options.Meta), nil
 	}
 
-	payload := buildStructuredPayload(entry, options.AddSource)
+	payload := buildStructuredPayload(entry, options.Meta)
 	encoded, err := json.Marshal(payload.asMap())
 	if err != nil {
 		return "", fmt.Errorf("marshal log entry: %w", err)
@@ -136,9 +136,9 @@ func renderEntry(entry LogEntry, options Options) (string, error) {
 	return string(encoded), nil
 }
 
-func renderPlainEntry(entry LogEntry, addSource bool) string {
+func renderPlainEntry(entry LogEntry, meta bool) string {
 	line := entry.originalLine()
-	if !addSource {
+	if !meta {
 		return line
 	}
 
@@ -148,7 +148,7 @@ func renderPlainEntry(entry LogEntry, addSource bool) string {
 func renderYAMLOutput(entries []LogEntry, options Options) ([]byte, error) {
 	items := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
-		items = append(items, buildStructuredPayload(entry, options.AddSource).asMap())
+		items = append(items, buildStructuredPayload(entry, options.Meta).asMap())
 	}
 
 	if len(items) == 0 {
@@ -163,8 +163,8 @@ func renderYAMLOutput(entries []LogEntry, options Options) ([]byte, error) {
 	return encoded, nil
 }
 
-func buildStructuredPayload(entry LogEntry, addSource bool) structuredPayload {
-	payload := newStructuredPayload(entry, addSource)
+func buildStructuredPayload(entry LogEntry, meta bool) structuredPayload {
+	payload := newStructuredPayload(entry, meta)
 
 	message := strings.TrimSpace(entry.messageText())
 	if message == "" {
@@ -230,7 +230,7 @@ func mergeKlogPayload(payload *structuredPayload, kubernetesTimestamp, message s
 		return false
 	}
 
-	payload.setExtra("level", matches[1])
+	payload.setExtra("level", klogSeverity(matches[1]))
 	if logTimestamp, ok := buildKlogTimestamp(kubernetesTimestamp, matches[1], matches[2]); ok {
 		payload.setExtra("log_timestamp", logTimestamp)
 	} else {
@@ -257,6 +257,25 @@ func mergeKlogPayload(payload *structuredPayload, kubernetesTimestamp, message s
 	}
 
 	return true
+}
+
+func klogSeverity(level string) string {
+	if len(level) == 0 {
+		return level
+	}
+
+	switch level[0] {
+	case 'I':
+		return "INFO"
+	case 'W':
+		return "WARN"
+	case 'E':
+		return "ERROR"
+	case 'F':
+		return "FATAL"
+	default:
+		return level
+	}
 }
 
 func mergeLogfmtPayload(payload *structuredPayload, message string) bool {

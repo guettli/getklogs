@@ -38,6 +38,7 @@ By default, getklogs uses the KUBECONFIG environment variable when it is set.
 Use --node to only include pods scheduled on nodes matching the given glob, for example *node*.
 Use --meta to include metadata such as source_pod and source_container in the output.
 Use --per-container to create one output file per container instead of joining all lines for the target.
+Use --follow to stream new log lines as they arrive; it implies --stdout.
 
 By default, getklogs writes the result to a timestamped file such as:
   deployment-name--namespace-YYYY-MM-DD_HH-MM-SSZ.log
@@ -57,6 +58,7 @@ Examples:
   getklogs --node '*worker*' --all
   getklogs --meta frontend
   getklogs --per-container frontend
+  getklogs --follow frontend
   getklogs --all
   getklogs --outdir /tmp/getklogs --all
   getklogs --stdout --tail 50 -n kube-system coredns
@@ -69,6 +71,7 @@ Available Commands:
 
 Flags:
       --all                 Process all matching targets. No interactive workload selection.
+      --follow              Follow logs and stream new lines as they arrive (implies --stdout)
   -h, --help                help for getklogs
       --kubeconfig string   Path to kubeconfig file (default: use KUBECONFIG when set)
       --meta                Include metadata such as source_pod and source_container in the output

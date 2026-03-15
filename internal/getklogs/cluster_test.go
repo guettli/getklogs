@@ -35,7 +35,7 @@ func TestConfigureRESTClientDisablesClientSideRateLimiting(t *testing.T) {
 func TestNewPodLogOptionsIncludesSinceTimeWhenPositive(t *testing.T) {
 	now := time.Date(2026, 3, 14, 12, 0, 0, 0, time.UTC)
 
-	options := newPodLogOptions("main", 3*time.Hour, now)
+	options := newPodLogOptions("main", 3*time.Hour, now, false)
 
 	if options.Container != "main" {
 		t.Fatalf("expected container main, got %q", options.Container)
@@ -49,13 +49,24 @@ func TestNewPodLogOptionsIncludesSinceTimeWhenPositive(t *testing.T) {
 	if !options.SinceTime.Time.Equal(now.Add(-3 * time.Hour)) {
 		t.Fatalf("expected SinceTime %s, got %s", now.Add(-3*time.Hour), options.SinceTime.Time)
 	}
+	if options.Follow {
+		t.Fatal("expected Follow to be disabled")
+	}
 }
 
 func TestNewPodLogOptionsOmitsSinceTimeWhenDisabled(t *testing.T) {
-	options := newPodLogOptions("main", 0, time.Date(2026, 3, 14, 12, 0, 0, 0, time.UTC))
+	options := newPodLogOptions("main", 0, time.Date(2026, 3, 14, 12, 0, 0, 0, time.UTC), false)
 
 	if options.SinceTime != nil {
 		t.Fatalf("expected SinceTime to be nil, got %s", options.SinceTime.Time)
+	}
+}
+
+func TestNewPodLogOptionsEnablesFollowWhenRequested(t *testing.T) {
+	options := newPodLogOptions("main", 0, time.Date(2026, 3, 14, 12, 0, 0, 0, time.UTC), true)
+
+	if !options.Follow {
+		t.Fatal("expected Follow to be enabled")
 	}
 }
 

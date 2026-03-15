@@ -590,7 +590,7 @@ func uniqueLabelValues(pods []corev1.Pod, key string) []string {
 }
 
 func (c *Cluster) GetLogs(ctx context.Context, namespace, podName, containerName string, since time.Duration) ([]LogEntry, error) {
-	request := c.client.CoreV1().Pods(namespace).GetLogs(podName, newPodLogOptions(containerName, since, time.Now()))
+	request := c.client.CoreV1().Pods(namespace).GetLogs(podName, newPodLogOptions(containerName, since, time.Now(), false))
 
 	stream, err := request.Stream(ctx)
 	if err != nil {
@@ -603,16 +603,57 @@ func (c *Cluster) GetLogs(ctx context.Context, namespace, podName, containerName
 		_ = stream.Close()
 	}()
 
-	return readLogEntries(stream, podName, containerName)
+	var entries []LogEntry
+	err = streamLogEntries(stream, podName, containerName, func(entry LogEntry) error {
+		entries = append(entries, entry)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return entries, nil
 }
 
-func newPodLogOptions(containerName string, since time.Duration, now time.Time) *corev1.PodLogOptions {
+func (c *Cluster) FollowLogs(ctx context.Context, namespace, podName, containerName string, startAt time.Time, onEntry func(LogEntry) error) error {
+	request := c.client.CoreV1().Pods(namespace).GetLogs(podName, newFollowPodLogOptions(containerName, startAt))
+
+	stream, err := request.Stream(ctx)
+	if err != nil {
+		if ignoreLogError(err) {
+			return nil
+		}
+		return fmt.Errorf("follow logs for pod %s container %s: %w", podName, containerName, err)
+	}
+	defer func() {
+		_ = stream.Close()
+	}()
+
+	return streamLogEntries(stream, podName, containerName, onEntry)
+}
+
+func newPodLogOptions(containerName string, since time.Duration, now time.Time, follow bool) *corev1.PodLogOptions {
 	options := &corev1.PodLogOptions{
 		Container:  containerName,
 		Timestamps: true,
+		Follow:     follow,
 	}
 	if since > 0 {
 		sinceTime := metav1.NewTime(now.Add(-since))
+		options.SinceTime = &sinceTime
+	}
+
+	return options
+}
+
+func newFollowPodLogOptions(containerName string, startAt time.Time) *corev1.PodLogOptions {
+	options := &corev1.PodLogOptions{
+		Container:  containerName,
+		Timestamps: true,
+		Follow:     true,
+	}
+	if !startAt.IsZero() {
+		sinceTime := metav1.NewTime(startAt)
 		options.SinceTime = &sinceTime
 	}
 
@@ -632,27 +673,41 @@ func ignoreLogError(err error) bool {
 }
 
 func readLogEntries(reader io.Reader, podName, containerName string) ([]LogEntry, error) {
-	scanner := newLineScanner(reader)
 	var entries []LogEntry
+	err := streamLogEntries(reader, podName, containerName, func(entry LogEntry) error {
+		entries = append(entries, entry)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return entries, nil
+}
+
+func streamLogEntries(reader io.Reader, podName, containerName string, onEntry func(LogEntry) error) error {
+	scanner := newLineScanner(reader)
 	for scanner.Scan() {
 		line := scanner.Text()
 		timestamp, message, ok := splitStructuredTimestamp(line)
 		if !ok {
-			return nil, fmt.Errorf("parse log line for pod %s container %s: missing RFC3339 timestamp", podName, containerName)
+			return fmt.Errorf("parse log line for pod %s container %s: missing RFC3339 timestamp", podName, containerName)
 		}
-		entries = append(entries, LogEntry{
+		if err := onEntry(LogEntry{
 			Timestamp:     timestamp,
 			PodName:       podName,
 			ContainerName: containerName,
 			Line:          line,
 			Message:       message,
-		})
+		}); err != nil {
+			return err
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		if ignoreLogError(err) {
-			return nil, nil
+			return nil
 		}
-		return nil, err
+		return err
 	}
-	return entries, nil
+	return nil
 }

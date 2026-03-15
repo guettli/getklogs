@@ -30,6 +30,7 @@ type Options struct {
 	Stdout       bool
 	Meta         bool
 	PerContainer bool
+	Follow       bool
 	TailLines    int
 	Output       string
 }
@@ -38,6 +39,9 @@ func NormalizeOptions(options Options) Options {
 	options.Output = strings.ToLower(strings.TrimSpace(options.Output))
 	if options.Output == "" {
 		options.Output = OutputFormatJSON
+	}
+	if options.Follow {
+		options.Stdout = true
 	}
 	options.OutDir = strings.TrimSpace(options.OutDir)
 	if options.OutDir == "" {
@@ -66,6 +70,9 @@ func ValidateOptions(options Options) error {
 	}
 	if options.Stdout && options.PerContainer {
 		return errors.New("--per-container cannot be used with --stdout")
+	}
+	if options.Follow && options.TailLines > 0 {
+		return errors.New("--follow cannot be used with --tail")
 	}
 	if options.Node != "" {
 		if _, err := path.Match(options.Node, ""); err != nil {

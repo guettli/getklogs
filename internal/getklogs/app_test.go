@@ -70,6 +70,23 @@ func TestValidateOptionsRejectsPerContainerWithStdout(t *testing.T) {
 	}
 }
 
+func TestNormalizeOptionsMakesFollowImplyStdout(t *testing.T) {
+	options := NormalizeOptions(Options{Follow: true})
+	if !options.Stdout {
+		t.Fatal("expected follow to imply stdout")
+	}
+}
+
+func TestValidateOptionsRejectsFollowWithTail(t *testing.T) {
+	err := ValidateOptions(Options{Follow: true, Stdout: true, TailLines: 1})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if err.Error() != "--follow cannot be used with --tail" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidateOptionsRejectsInvalidNodePattern(t *testing.T) {
 	err := ValidateOptions(Options{Node: "["})
 	if err == nil {
@@ -1009,6 +1026,15 @@ func TestAppRunWritesYAMLWhenRequested(t *testing.T) {
 				Message:       "first",
 			}},
 		},
+		followLogs: map[string][]LogEntry{
+			"frontend-a/main": {{
+				Timestamp:     "2026-03-14T10:00:02Z",
+				PodName:       "frontend-a",
+				ContainerName: "main",
+				Line:          "2026-03-14T10:00:02Z live",
+				Message:       "live",
+			}},
+		},
 	}
 
 	var stderr bytes.Buffer
@@ -1198,11 +1224,26 @@ func TestAppRunWritesToStdoutWhenRequested(t *testing.T) {
 				Message:       "first",
 			}},
 		},
+		followLogs: map[string][]LogEntry{
+			"frontend-a/main": {{
+				Timestamp:     "2026-03-14T10:20:31Z",
+				PodName:       "frontend-a",
+				ContainerName: "main",
+				Line:          "2026-03-14T10:20:31Z live",
+				Message:       "live",
+			}},
+		},
 	}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	app := App{Cluster: cluster, Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr}
+	app := App{
+		Cluster: cluster,
+		Stdin:   strings.NewReader(""),
+		Stdout:  &stdout,
+		Stderr:  &stderr,
+		Now:     func() time.Time { return time.Date(2026, 3, 14, 10, 20, 30, 0, time.UTC) },
+	}
 
 	if err := app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, Stdout: true}); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -1218,6 +1259,152 @@ func TestAppRunWritesToStdoutWhenRequested(t *testing.T) {
 	}
 	if !strings.HasSuffix(stderr.String(), "\n\n") {
 		t.Fatalf("expected stderr to end with a blank line, got %q", stderr.String())
+	}
+}
+
+func TestAppRunFollowsLogsToStdout(t *testing.T) {
+	cluster := fakeCluster{
+		workloads: []Workload{{
+			Namespace: "team-a",
+			Kind:      "Deployment",
+			Name:      "frontend",
+		}},
+		targetsByTarget: map[string]WorkloadTargets{
+			"Deployment/team-a/frontend": {Containers: []ContainerRef{{PodName: "frontend-a", ContainerName: "main"}}},
+		},
+		logs: map[string][]LogEntry{
+			"frontend-a/main": {{
+				Timestamp:     "2026-03-14T10:00:00Z",
+				PodName:       "frontend-a",
+				ContainerName: "main",
+				Line:          "2026-03-14T10:00:00Z first",
+				Message:       "first",
+			}},
+		},
+		followLogs: map[string][]LogEntry{
+			"frontend-a/main": {{
+				Timestamp:     "2026-03-14T10:20:31Z",
+				PodName:       "frontend-a",
+				ContainerName: "main",
+				Line:          "2026-03-14T10:20:31Z live",
+				Message:       "live",
+			}},
+		},
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := App{
+		Cluster: cluster,
+		Stdin:   strings.NewReader(""),
+		Stdout:  &stdout,
+		Stderr:  &stderr,
+		Now:     func() time.Time { return time.Date(2026, 3, 14, 10, 20, 30, 0, time.UTC) },
+	}
+
+	if err := app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, Stdout: true, Follow: true}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"message":"first"`) {
+		t.Fatalf("expected followed stdout output, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"message":"live"`) {
+		t.Fatalf("expected live followed stdout output, got %q", stdout.String())
+	}
+	if strings.Contains(stderr.String(), "Writing ") {
+		t.Fatalf("did not expect file output message, got %q", stderr.String())
+	}
+}
+
+func TestAppRunFollowsLogsAsYAMLDocuments(t *testing.T) {
+	cluster := fakeCluster{
+		workloads: []Workload{{
+			Namespace: "team-a",
+			Kind:      "Deployment",
+			Name:      "frontend",
+		}},
+		targetsByTarget: map[string]WorkloadTargets{
+			"Deployment/team-a/frontend": {Containers: []ContainerRef{{PodName: "frontend-a", ContainerName: "main"}}},
+		},
+		logs: map[string][]LogEntry{
+			"frontend-a/main": {{
+				Timestamp:     "2026-03-14T10:00:00Z",
+				PodName:       "frontend-a",
+				ContainerName: "main",
+				Line:          "2026-03-14T10:00:00Z first",
+				Message:       "first",
+			}},
+		},
+		followLogs: map[string][]LogEntry{
+			"frontend-a/main": {{
+				Timestamp:     "2026-03-14T10:20:31Z",
+				PodName:       "frontend-a",
+				ContainerName: "main",
+				Line:          "2026-03-14T10:20:31Z live",
+				Message:       "live",
+			}},
+		},
+	}
+
+	var stdout bytes.Buffer
+	app := App{
+		Cluster: cluster,
+		Stdin:   strings.NewReader(""),
+		Stdout:  &stdout,
+		Stderr:  &bytes.Buffer{},
+		Now:     func() time.Time { return time.Date(2026, 3, 14, 10, 20, 30, 0, time.UTC) },
+	}
+
+	if err := app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, Follow: true, Output: OutputFormatYAML}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "message: first\n") {
+		t.Fatalf("expected historical yaml output, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "---\n") {
+		t.Fatalf("expected yaml document separator, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "message: live\n") {
+		t.Fatalf("expected live yaml output, got %q", stdout.String())
+	}
+}
+
+func TestAppRunFollowAllowsMultipleTargetsAndSortsHistoricalLogs(t *testing.T) {
+	app := App{
+		Cluster: fakeCluster{
+			workloads: []Workload{
+				{Namespace: "team-a", Kind: "Deployment", Name: "frontend"},
+				{Namespace: "team-a", Kind: "StatefulSet", Name: "database"},
+			},
+			targetsByTarget: map[string]WorkloadTargets{
+				"Deployment/team-a/frontend":  {Containers: []ContainerRef{{PodName: "frontend-a", ContainerName: "main"}}},
+				"StatefulSet/team-a/database": {Containers: []ContainerRef{{PodName: "database-0", ContainerName: "main"}}},
+			},
+			logs: map[string][]LogEntry{
+				"frontend-a/main": {{Timestamp: "2026-03-14T10:00:01Z", PodName: "frontend-a", ContainerName: "main", Line: "2026-03-14T10:00:01Z second", Message: "second"}},
+				"database-0/main": {{Timestamp: "2026-03-14T10:00:00Z", PodName: "database-0", ContainerName: "main", Line: "2026-03-14T10:00:00Z first", Message: "first"}},
+			},
+		},
+		Stdin:  strings.NewReader(""),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+		Now:    func() time.Time { return time.Date(2026, 3, 14, 10, 20, 30, 0, time.UTC) },
+	}
+
+	stdout := app.Stdout.(*bytes.Buffer)
+	err := app.Run(context.Background(), Options{All: true, Since: time.Hour, Stdout: true, Follow: true})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), stdout.String())
+	}
+	if !strings.Contains(lines[0], `"message":"first"`) {
+		t.Fatalf("expected first historical line first, got %q", lines[0])
+	}
+	if !strings.Contains(lines[1], `"message":"second"`) {
+		t.Fatalf("expected second historical line second, got %q", lines[1])
 	}
 }
 
@@ -1512,6 +1699,7 @@ type fakeCluster struct {
 	targets         WorkloadTargets
 	targetsByTarget map[string]WorkloadTargets
 	logs            map[string][]LogEntry
+	followLogs      map[string][]LogEntry
 }
 
 func (f fakeCluster) ListWorkloads(context.Context, string, string) ([]Workload, error) {
@@ -1544,6 +1732,16 @@ func (f fakeCluster) ResolveWorkloadTargets(_ context.Context, workloads []Workl
 
 func (f fakeCluster) GetLogs(_ context.Context, _ string, podName, containerName string, _ time.Duration) ([]LogEntry, error) {
 	return f.logs[podName+"/"+containerName], nil
+}
+
+func (f fakeCluster) FollowLogs(_ context.Context, _ string, podName, containerName string, _ time.Time, onEntry func(LogEntry) error) error {
+	entries := f.followLogs[podName+"/"+containerName]
+	for _, entry := range entries {
+		if err := onEntry(entry); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func targetKey(workload Workload) string {
@@ -1607,10 +1805,18 @@ func (c *nodeTrackingCluster) GetLogs(context.Context, string, string, string, t
 	return nil, nil
 }
 
+func (c *nodeTrackingCluster) FollowLogs(context.Context, string, string, string, time.Time, func(LogEntry) error) error {
+	return nil
+}
+
 type contextAwareCluster struct {
 	fakeCluster
 }
 
 func (c contextAwareCluster) GetLogs(ctx context.Context, _ string, _ string, _ string, _ time.Duration) ([]LogEntry, error) {
 	return nil, ctx.Err()
+}
+
+func (c contextAwareCluster) FollowLogs(ctx context.Context, _ string, _ string, _ string, _ time.Time, _ func(LogEntry) error) error {
+	return ctx.Err()
 }

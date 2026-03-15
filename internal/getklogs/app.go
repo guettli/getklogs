@@ -47,6 +47,7 @@ type ClusterAPI interface {
 	ListStandalonePods(ctx context.Context, namespace, node string) ([]Workload, error)
 	ListContainersForWorkload(ctx context.Context, workload Workload, node string) (WorkloadTargets, error)
 	GetLogs(ctx context.Context, namespace, podName, containerName string, since time.Duration) ([]LogEntry, error)
+	FollowLogs(ctx context.Context, namespace, podName, containerName string, startAt time.Time, onEntry func(LogEntry) error) error
 }
 
 type batchTargetResolver interface {
@@ -86,6 +87,9 @@ func (a App) Run(ctx context.Context, options Options) error {
 	resolvedTargets, err := a.resolveWorkloadTargets(ctx, selectedTargets, options)
 	if err != nil {
 		return err
+	}
+	if options.Follow {
+		return a.followTargets(ctx, selectedTargets, resolvedTargets, options)
 	}
 
 	for index, selected := range selectedTargets {

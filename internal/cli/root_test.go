@@ -273,6 +273,39 @@ func TestRootCommandRejectsPerContainerWithStdout(t *testing.T) {
 	}
 }
 
+func TestRootCommandFollowImpliesStdout(t *testing.T) {
+	useTestCluster(t, rootTestCluster{
+		workloads: []getklogs.Workload{{
+			Namespace: "team-a",
+			Kind:      "Deployment",
+			Name:      "frontend",
+		}},
+		targetsByTarget: map[string]getklogs.WorkloadTargets{
+			"Deployment/team-a/frontend": {Containers: []getklogs.ContainerRef{{PodName: "frontend-a", ContainerName: "main"}}},
+		},
+		logs: map[string][]getklogs.LogEntry{
+			"frontend-a/main": {{
+				Timestamp:     "2026-03-14T10:00:00Z",
+				PodName:       "frontend-a",
+				ContainerName: "main",
+				Line:          "2026-03-14T10:00:00Z hello",
+				Message:       "hello",
+			}},
+		},
+	})
+
+	var stdout bytes.Buffer
+	cmd := NewRootCmd(strings.NewReader(""), &stdout, &bytes.Buffer{})
+	cmd.SetArgs([]string{"--follow", "frontend"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"message":"hello"`) {
+		t.Fatalf("expected follow output on stdout, got %q", stdout.String())
+	}
+}
+
 func TestRootCommandPassesKubeconfigToClusterFactory(t *testing.T) {
 	original := newCluster
 	t.Cleanup(func() {
@@ -333,6 +366,9 @@ func TestRootCommandHelpMentionsKubeconfigDefault(t *testing.T) {
 	if !strings.Contains(helpText, "--per-container") {
 		t.Fatalf("expected help text to mention per-container flag, got %q", helpText)
 	}
+	if !strings.Contains(helpText, "--follow") {
+		t.Fatalf("expected help text to mention follow flag, got %q", helpText)
+	}
 }
 
 func useTestCluster(t *testing.T, cluster rootTestCluster) {
@@ -353,6 +389,7 @@ type rootTestCluster struct {
 	standalonePods  []getklogs.Workload
 	targetsByTarget map[string]getklogs.WorkloadTargets
 	logs            map[string][]getklogs.LogEntry
+	followLogs      map[string][]getklogs.LogEntry
 }
 
 func (c rootTestCluster) ListWorkloads(context.Context, string, string) ([]getklogs.Workload, error) {
@@ -381,6 +418,15 @@ func (c rootTestCluster) ResolveWorkloadTargets(_ context.Context, workloads []g
 
 func (c rootTestCluster) GetLogs(_ context.Context, _ string, podName, containerName string, _ time.Duration) ([]getklogs.LogEntry, error) {
 	return c.logs[podName+"/"+containerName], nil
+}
+
+func (c rootTestCluster) FollowLogs(_ context.Context, _ string, podName, containerName string, _ time.Time, onEntry func(getklogs.LogEntry) error) error {
+	for _, entry := range c.followLogs[podName+"/"+containerName] {
+		if err := onEntry(entry); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func rootTargetKey(workload getklogs.Workload) string {

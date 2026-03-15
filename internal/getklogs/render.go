@@ -126,6 +126,9 @@ func renderEntry(entry LogEntry, options Options) (string, error) {
 	if options.Output == OutputFormatRaw {
 		return renderPlainEntry(entry, options.Meta), nil
 	}
+	if options.Output == OutputFormatYAML {
+		return renderYAMLEntry(entry, options.Meta)
+	}
 
 	payload := buildStructuredPayload(entry, options.Meta)
 	encoded, err := json.Marshal(payload.asMap())
@@ -134,6 +137,16 @@ func renderEntry(entry LogEntry, options Options) (string, error) {
 	}
 
 	return string(encoded), nil
+}
+
+func renderYAMLEntry(entry LogEntry, meta bool) (string, error) {
+	payload := buildStructuredPayload(entry, meta)
+	encoded, err := yaml.Marshal(payload.asMap())
+	if err != nil {
+		return "", fmt.Errorf("marshal yaml log entry: %w", err)
+	}
+
+	return strings.TrimSuffix(string(encoded), "\n"), nil
 }
 
 func renderPlainEntry(entry LogEntry, meta bool) string {

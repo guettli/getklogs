@@ -36,9 +36,12 @@ By default, getklogs uses the KUBECONFIG environment variable when it is set.
 
 Use --node to only include pods scheduled on nodes matching the given glob, for example *node*.
 Use --meta to include metadata such as source_pod and source_container in the output.
+Use --per-container to create one output file per container instead of joining all lines for the target.
 
 By default, getklogs writes the result to a timestamped file such as:
   deployment-name--namespace-YYYY-MM-DD_HH-MM-SSZ.log
+
+By default, all log lines for the selected target are joined and sorted by time.
 `, getklogs.DescribeSinceWindow(getklogs.DefaultSince)),
 		Example: `  getklogs
   getklogs kubeadm-bootstrap
@@ -47,6 +50,7 @@ By default, getklogs writes the result to a timestamped file such as:
   getklogs --pod apiserver
   getklogs --node '*worker*' --all
   getklogs --meta frontend
+  getklogs --per-container frontend
   getklogs --all
   getklogs --outdir /tmp/getklogs --all
   getklogs --stdout --tail 50 -n kube-system coredns
@@ -91,7 +95,8 @@ By default, getklogs writes the result to a timestamped file such as:
 	cmd.Flags().StringVar(&options.Kubeconfig, "kubeconfig", "", "Path to kubeconfig file (default: use KUBECONFIG when set)")
 	cmd.Flags().StringVar(&options.Node, "node", "", "Only include pods on nodes matching this glob pattern, for example *node*")
 	cmd.Flags().BoolVar(&options.Meta, "meta", false, "Include metadata such as source_pod and source_container in the output")
-	cmd.Flags().IntVar(&options.TailLines, "tail", 0, "Only include the last N combined log lines per target")
+	cmd.Flags().BoolVar(&options.PerContainer, "per-container", false, "Create one output file per container instead of one combined file per target")
+	cmd.Flags().IntVar(&options.TailLines, "tail", 0, "Only include the last N combined log lines per target; with --per-container, per container")
 	cmd.Flags().StringVarP(&options.Output, "output", "o", getklogs.OutputFormatJSON, "Output format: json, yaml, or raw")
 
 	return cmd

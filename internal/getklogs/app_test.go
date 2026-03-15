@@ -60,6 +60,16 @@ func TestValidateOptionsRejectsOutDirWithStdout(t *testing.T) {
 	}
 }
 
+func TestValidateOptionsRejectsPerContainerWithStdout(t *testing.T) {
+	err := ValidateOptions(Options{Stdout: true, PerContainer: true})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if err.Error() != "--per-container cannot be used with --stdout" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidateOptionsRejectsInvalidNodePattern(t *testing.T) {
 	err := ValidateOptions(Options{Node: "["})
 	if err == nil {
@@ -197,6 +207,20 @@ func TestBuildOutputFilenameUsesYAMLExtension(t *testing.T) {
 	}, time.Date(2026, 3, 14, 11, 22, 33, 0, time.UTC), OutputFormatYAML)
 
 	expected := "ccm--kube-system-2026-03-14_11-22-33Z.yaml"
+	if filename != expected {
+		t.Fatalf("expected %q, got %q", expected, filename)
+	}
+}
+
+func TestBuildOutputFilenameForContainerIncludesPodAndContainer(t *testing.T) {
+	filename := buildOutputFilenameForContainer(
+		Workload{Namespace: "kube-system", Name: "ccm"},
+		ContainerRef{PodName: "ccm-a", ContainerName: "manager"},
+		time.Date(2026, 3, 14, 11, 22, 33, 0, time.UTC),
+		OutputFormatJSON,
+	)
+
+	expected := "ccm--kube-system--ccm-a--manager-2026-03-14_11-22-33Z.log"
 	if filename != expected {
 		t.Fatalf("expected %q, got %q", expected, filename)
 	}
@@ -1077,6 +1101,81 @@ func TestAppRunAddsMetadataWhenRequested(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "Warning: rollout appears to be in progress") {
 		t.Fatalf("expected rollout warning in stderr, got %q", stderr.String())
+	}
+}
+
+func TestAppRunPerContainerWritesSeparateFiles(t *testing.T) {
+	cluster := fakeCluster{
+		workloads: []Workload{{
+			Namespace: "team-a",
+			Kind:      "Deployment",
+			Name:      "frontend",
+		}},
+		targetsByTarget: map[string]WorkloadTargets{
+			"Deployment/team-a/frontend": {Containers: []ContainerRef{
+				{PodName: "frontend-a", ContainerName: "main"},
+				{PodName: "frontend-a", ContainerName: "sidecar"},
+			}},
+		},
+		logs: map[string][]LogEntry{
+			"frontend-a/main": {{
+				Timestamp:     "2026-03-14T10:00:00Z",
+				PodName:       "frontend-a",
+				ContainerName: "main",
+				Line:          "2026-03-14T10:00:00Z first",
+				Message:       "first",
+			}},
+			"frontend-a/sidecar": {{
+				Timestamp:     "2026-03-14T10:00:01Z",
+				PodName:       "frontend-a",
+				ContainerName: "sidecar",
+				Line:          "2026-03-14T10:00:01Z second",
+				Message:       "second",
+			}},
+		},
+	}
+
+	var stderr bytes.Buffer
+	tempDir := t.TempDir()
+
+	app := App{
+		Cluster: cluster,
+		Stdin:   strings.NewReader(""),
+		Stdout:  &bytes.Buffer{},
+		Stderr:  &stderr,
+		Now: func() time.Time {
+			return time.Date(2026, 3, 14, 10, 20, 30, 0, time.UTC)
+		},
+	}
+
+	if err := app.Run(context.Background(), Options{TermQuery: "frontend", Since: time.Hour, PerContainer: true, OutDir: tempDir}); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	mainFile := filepath.Join(tempDir, "frontend--team-a--frontend-a--main-2026-03-14_10-20-30Z.log")
+	sidecarFile := filepath.Join(tempDir, "frontend--team-a--frontend-a--sidecar-2026-03-14_10-20-30Z.log")
+
+	mainContent, err := os.ReadFile(mainFile)
+	if err != nil {
+		t.Fatalf("ReadFile main returned error: %v", err)
+	}
+	if string(mainContent) != "{\"kubernetes_timestamp\":\"2026-03-14T10:00:00Z\",\"message\":\"first\"}\n" {
+		t.Fatalf("unexpected main file output:\n%s", string(mainContent))
+	}
+
+	sidecarContent, err := os.ReadFile(sidecarFile)
+	if err != nil {
+		t.Fatalf("ReadFile sidecar returned error: %v", err)
+	}
+	if string(sidecarContent) != "{\"kubernetes_timestamp\":\"2026-03-14T10:00:01Z\",\"message\":\"second\"}\n" {
+		t.Fatalf("unexpected sidecar file output:\n%s", string(sidecarContent))
+	}
+
+	if !strings.Contains(stderr.String(), "Writing 1 logs to "+mainFile) {
+		t.Fatalf("expected stderr to mention main container file, got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Writing 1 logs to "+sidecarFile) {
+		t.Fatalf("expected stderr to mention sidecar container file, got %q", stderr.String())
 	}
 }
 

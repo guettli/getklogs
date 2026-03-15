@@ -119,6 +119,62 @@ func TestRootCommandWritesFilesToOutDir(t *testing.T) {
 	}
 }
 
+func TestRootCommandWritesOneFilePerContainer(t *testing.T) {
+	tempDir := t.TempDir()
+	useTestCluster(t, rootTestCluster{
+		workloads: []getklogs.Workload{{
+			Namespace: "team-a",
+			Kind:      "Deployment",
+			Name:      "frontend",
+		}},
+		targetsByTarget: map[string]getklogs.WorkloadTargets{
+			"Deployment/team-a/frontend": {Containers: []getklogs.ContainerRef{
+				{PodName: "frontend-a", ContainerName: "main"},
+				{PodName: "frontend-a", ContainerName: "sidecar"},
+			}},
+		},
+		logs: map[string][]getklogs.LogEntry{
+			"frontend-a/main": {{
+				Timestamp:     "2026-03-14T10:00:00Z",
+				PodName:       "frontend-a",
+				ContainerName: "main",
+				Line:          "2026-03-14T10:00:00Z hello",
+				Message:       "hello",
+			}},
+			"frontend-a/sidecar": {{
+				Timestamp:     "2026-03-14T10:00:01Z",
+				PodName:       "frontend-a",
+				ContainerName: "sidecar",
+				Line:          "2026-03-14T10:00:01Z world",
+				Message:       "world",
+			}},
+		},
+	})
+
+	var stderr bytes.Buffer
+	cmd := NewRootCmd(strings.NewReader(""), &bytes.Buffer{}, &stderr)
+	cmd.SetArgs([]string{"frontend", "--per-container", "--outdir", tempDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	mainMatches, err := filepath.Glob(filepath.Join(tempDir, "frontend--team-a--frontend-a--main-*.log"))
+	if err != nil {
+		t.Fatalf("Glob main returned error: %v", err)
+	}
+	sidecarMatches, err := filepath.Glob(filepath.Join(tempDir, "frontend--team-a--frontend-a--sidecar-*.log"))
+	if err != nil {
+		t.Fatalf("Glob sidecar returned error: %v", err)
+	}
+	if len(mainMatches) != 1 {
+		t.Fatalf("expected 1 main container file, got %v", mainMatches)
+	}
+	if len(sidecarMatches) != 1 {
+		t.Fatalf("expected 1 sidecar container file, got %v", sidecarMatches)
+	}
+}
+
 func TestRootCommandWritesMultipleYAMLDocumentsToStdout(t *testing.T) {
 	useTestCluster(t, rootTestCluster{
 		workloads: []getklogs.Workload{
@@ -204,6 +260,19 @@ func TestRootCommandRejectsStdoutWithOutDir(t *testing.T) {
 	}
 }
 
+func TestRootCommandRejectsPerContainerWithStdout(t *testing.T) {
+	cmd := NewRootCmd(strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	cmd.SetArgs([]string{"--stdout", "--per-container"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if err.Error() != "--per-container cannot be used with --stdout" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestRootCommandPassesKubeconfigToClusterFactory(t *testing.T) {
 	original := newCluster
 	t.Cleanup(func() {
@@ -260,6 +329,9 @@ func TestRootCommandHelpMentionsKubeconfigDefault(t *testing.T) {
 	}
 	if !strings.Contains(helpText, "--meta") {
 		t.Fatalf("expected help text to mention metadata flag, got %q", helpText)
+	}
+	if !strings.Contains(helpText, "--per-container") {
+		t.Fatalf("expected help text to mention per-container flag, got %q", helpText)
 	}
 }
 

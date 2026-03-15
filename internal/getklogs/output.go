@@ -32,6 +32,10 @@ func (a App) runForTarget(ctx context.Context, selected Workload, targets Worklo
 		}
 	}
 
+	if options.PerContainer {
+		return a.runForTargetPerContainer(ctx, selected, containers, options)
+	}
+
 	entries, err := a.collectLogs(ctx, selected.Namespace, containers, options.Since)
 	if err != nil {
 		return err
@@ -92,6 +96,53 @@ func (a App) runForTarget(ctx context.Context, selected Workload, targets Worklo
 	return err
 }
 
+func (a App) runForTargetPerContainer(ctx context.Context, selected Workload, containers []ContainerRef, options Options) error {
+	var wroteAny bool
+	now := a.now().UTC()
+
+	for _, container := range containers {
+		entries, err := a.collectLogs(ctx, selected.Namespace, []ContainerRef{container}, options.Since)
+		if err != nil {
+			return err
+		}
+		if options.TailLines > 0 && len(entries) > options.TailLines {
+			entries = entries[len(entries)-options.TailLines:]
+		}
+
+		content, err := renderOutput(entries, options)
+		if err != nil {
+			return err
+		}
+		logCount := len(entries)
+		if logCount == 0 {
+			continue
+		}
+
+		if err := os.MkdirAll(options.OutDir, 0o755); err != nil {
+			return fmt.Errorf("create output directory %q: %w", options.OutDir, err)
+		}
+
+		outputFile := buildOutputPathForContainer(selected, container, now, options)
+		if _, err := fmt.Fprintf(a.Stderr, "Writing %d logs to %s\n", logCount, outputFile); err != nil {
+			return err
+		}
+		if err := writeFileAtomically(outputFile, content, 0o644); err != nil {
+			return err
+		}
+
+		wroteAny = true
+	}
+
+	if !wroteAny {
+		if _, err := fmt.Fprintln(a.Stderr, "No log lines found."); err != nil {
+			return err
+		}
+	}
+
+	_, err := fmt.Fprintln(a.Stderr)
+	return err
+}
+
 func writeFileAtomically(filename string, content []byte, mode os.FileMode) error {
 	tempFile, err := os.CreateTemp(filepath.Dir(filename), filepath.Base(filename)+".tmp-*")
 	if err != nil {
@@ -136,6 +187,27 @@ func buildOutputFilename(workload Workload, now time.Time, outputFormat string) 
 
 func buildOutputPath(workload Workload, now time.Time, options Options) string {
 	return filepath.Join(options.OutDir, buildOutputFilename(workload, now, options.Output))
+}
+
+func buildOutputFilenameForContainer(workload Workload, container ContainerRef, now time.Time, outputFormat string) string {
+	extension := ".log"
+	if outputFormat == OutputFormatYAML {
+		extension = ".yaml"
+	}
+
+	return fmt.Sprintf(
+		"%s--%s--%s--%s-%s%s",
+		workload.Name,
+		workload.Namespace,
+		container.PodName,
+		container.ContainerName,
+		now.UTC().Format("2006-01-02_15-04-05Z"),
+		extension,
+	)
+}
+
+func buildOutputPathForContainer(workload Workload, container ContainerRef, now time.Time, options Options) string {
+	return filepath.Join(options.OutDir, buildOutputFilenameForContainer(workload, container, now, options.Output))
 }
 
 func (a App) now() time.Time {

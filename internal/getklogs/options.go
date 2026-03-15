@@ -25,12 +25,13 @@ type Options struct {
 	Kubeconfig string
 	Node       string
 
-	Pod       bool
-	All       bool
-	Stdout    bool
-	Meta      bool
-	TailLines int
-	Output    string
+	Pod          bool
+	All          bool
+	Stdout       bool
+	Meta         bool
+	PerContainer bool
+	TailLines    int
+	Output       string
 }
 
 func NormalizeOptions(options Options) Options {
@@ -62,6 +63,9 @@ func ValidateOptions(options Options) error {
 	}
 	if options.Stdout && options.OutDir != "." {
 		return errors.New("--outdir cannot be used with --stdout")
+	}
+	if options.Stdout && options.PerContainer {
+		return errors.New("--per-container cannot be used with --stdout")
 	}
 	if options.Node != "" {
 		if _, err := path.Match(options.Node, ""); err != nil {

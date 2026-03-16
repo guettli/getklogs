@@ -49,6 +49,33 @@ func TestRootCommandRejectsInvalidOutputBeforeTalkingToKubernetes(t *testing.T) 
 	}
 }
 
+func TestRootCommandPrintsVersionWithoutTalkingToKubernetes(t *testing.T) {
+	original := newCluster
+	t.Cleanup(func() {
+		newCluster = original
+	})
+
+	newCluster = func(string) (getklogs.ClusterAPI, error) {
+		t.Fatal("newCluster should not be called for --version")
+		return nil, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd := NewRootCmd(strings.NewReader(""), &stdout, &stderr)
+	cmd.SetArgs([]string{"--version"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if stdout.String() != buildVersion()+"\n" {
+		t.Fatalf("unexpected stdout: %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
 func TestToJSONCommandSupportsLongInputLines(t *testing.T) {
 	t.Setenv("KUBECONFIG", t.TempDir()+"/missing")
 

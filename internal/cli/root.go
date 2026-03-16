@@ -19,8 +19,9 @@ func NewRootCmd(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	}
 
 	cmd := &cobra.Command{
-		Use:   "getklogs [term]",
-		Short: "Fetch workload and pod logs",
+		Use:     "getklogs [term]",
+		Short:   "Fetch workload and pod logs",
+		Version: buildVersion(),
 		Long: fmt.Sprintf(`Fetch logs for Kubernetes workloads and pods and sort them by Kubernetes timestamp.
 
 Here, "workload" means a Deployment, DaemonSet, or StatefulSet.
@@ -84,6 +85,7 @@ By default, all log lines for the selected target are joined and sorted by time.
 		},
 	}
 	cmd.AddCommand(newToJSONCmd(stdin, stdout))
+	cmd.SetVersionTemplate("{{.Version}}\n")
 
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)

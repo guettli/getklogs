@@ -84,6 +84,7 @@ Flags:
       --since duration      Return logs newer than a relative duration like 5s, 2m, or 3h. Use 0s for all available logs (default 3h0m0s)
       --stdout              Write output to stdout instead of creating files
       --tail int            Only include the last N combined log lines per target; with --per-container, per container
+  -v, --version             version for getklogs
 
 Use "getklogs [command] --help" for more information about a command.
 ```

@@ -632,6 +632,23 @@ func TestRenderEntriesKeepsOriginalLinesForRawOutput(t *testing.T) {
 	}
 }
 
+func TestRenderEntriesRawDoesNotPrependTimestampWithoutOriginalLine(t *testing.T) {
+	lines, err := renderEntries([]LogEntry{{
+		Timestamp:     "2026-03-14T10:00:00Z",
+		PodName:       "frontend-a",
+		ContainerName: "main",
+		Message:       "hello",
+	}}, Options{Output: OutputFormatRaw})
+	if err != nil {
+		t.Fatalf("renderEntries returned error: %v", err)
+	}
+
+	expected := "hello"
+	if len(lines) != 1 || lines[0] != expected {
+		t.Fatalf("unexpected lines: %#v", lines)
+	}
+}
+
 func TestRenderEntriesAddsSourceOnlyWhenRequested(t *testing.T) {
 	lines, err := renderEntries([]LogEntry{{
 		Timestamp:     "2026-03-14T10:00:00Z",

@@ -150,7 +150,7 @@ func renderYAMLEntry(entry LogEntry, meta bool) (string, error) {
 }
 
 func renderPlainEntry(entry LogEntry, meta bool) string {
-	line := entry.originalLine()
+	line := entry.rawLine()
 	if !meta {
 		return line
 	}
@@ -204,18 +204,15 @@ func buildStructuredPayload(entry LogEntry, meta bool) structuredPayload {
 	return payload
 }
 
-func (e LogEntry) originalLine() string {
+func (e LogEntry) rawLine() string {
 	if e.Line != "" {
 		return e.Line
 	}
-	if e.Timestamp == "" {
+	if e.Message != "" {
 		return e.Message
 	}
-	if e.Message == "" {
-		return e.Timestamp
-	}
 
-	return e.Timestamp + " " + e.Message
+	return e.Timestamp
 }
 
 func (e LogEntry) messageText() string {

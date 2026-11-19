@@ -4,3 +4,4 @@ bin/
 result
 /*.log
 /*.yaml
+!/.pre-commit-config.yaml
